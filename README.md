@@ -63,7 +63,7 @@ To resume from a previous checkpoint inside `dinov3_vits16/`:
 
 ```bash
 uv run python main.py \
---continue_training \
+--resume \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
@@ -104,6 +104,8 @@ tensorboard --logdir runs
 `--ckpt_dir`: directory where backbone checkpoints are searched (default `ckpts`)
 
 `--test_only`: skip training and run inference only
+
+`--resume`: resume training from the last checkpoint in `runs/<exp_name>/`
 
 `--use_amp`: enable torch.cuda.amp mixed precision (effective on CUDA devices)
 

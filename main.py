@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keep_checkpoint_history", type=int, default=20, help="number of saved checkpoint epochs to retain (0 keeps all)")
     parser.add_argument("--is_hyper", type=int, default=1, help="use hypercolumn features (1|0)")
     parser.add_argument("--test_only", action="store_true", help="run inference only (skip training)")
-    parser.add_argument("--continue_training", action="store_true", help="resume training from the checkpoint stored under runs/--exp_name")
+    parser.add_argument("--resume", action="store_true", help="resume training from the checkpoint stored under runs/--exp_name")
     parser.add_argument("--epochs", type=int, default=100, help="number of training epochs")
     parser.add_argument("--device", default=None, help="device identifier (e.g. cuda:0)")
     parser.add_argument("--seed", type=int, default=42, help="random seed")
@@ -425,7 +425,7 @@ def train(args: argparse.Namespace) -> None:
             log(f"[i] First real sample: {real_inputs[0]}")
 
         start_epoch = 1
-        if args.continue_training:
+        if args.resume:
             start_epoch = resume_from_checkpoint(
                 exp_dir, device, generator,
                 discriminator, optimizer_g,
