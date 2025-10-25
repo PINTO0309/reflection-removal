@@ -1,0 +1,21 @@
+[project]
+name = "perceptual-reflection-removal"
+version = "1.0.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = "==3.11.12"
+dependencies = [
+    "numpy==1.26.4",
+    "opencv-python==4.11.0.86",
+    "scipy==1.16.2",
+    "tensorboard==2.20.0",
+    "termcolor==3.1.0",
+    "torch==2.9.0",
+    "torchmetrics==1.8.2",
+    "torchvision==0.24.0",
+    "tqdm==4.67.1",
+]
+[tool.uv]
+override-dependencies = [
+    "sympy>=1.13.1,<1.14",
+]
