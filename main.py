@@ -323,7 +323,7 @@ def evaluate_samples(generator: HypercolumnGenerator,
     epoch_dir = results_root / f"epoch_{epoch:04d}"
     epoch_dir.mkdir(parents=True, exist_ok=True)
 
-    for image_path in images:
+    for idx, image_path in enumerate(images, start=1):
         img = load_image(image_path)
         if img is None:
             continue
@@ -334,7 +334,7 @@ def evaluate_samples(generator: HypercolumnGenerator,
         pred_t_img = tensor_to_image(pred_t[0])
         pred_r_img = tensor_to_image(pred_r[0])
 
-        subdir = epoch_dir / image_path.stem
+        subdir = epoch_dir / f"{idx:04d}_{image_path.stem}"
         subdir.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(subdir / "input.png"),
                     (np.clip(img, 0, 1) * 255.0).astype(np.uint8))

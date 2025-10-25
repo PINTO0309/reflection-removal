@@ -91,7 +91,7 @@ Therefore, the loss display is not the final total loss, but an indicator for ch
 
 After every training epoch the current generator runs inference on the images specified by `--test_dir`, and the outputs are written to `test_results/<exp_name>/epoch_<NNNN>/`. If `--test_dir` does not resolve to any images, the script falls back to a fixed set of up to 10 blended inputs gathered from `--data_real_dir`, so you still get a consistent visual trace of progress across epochs. Clean up these folders periodically if disk usage grows too large.
 
-Each validation sample produces a directory named after the source image (e.g. `test_results/<exp_name>/epoch_0001/<image_stem>/`) containing three PNGs:
+Each validation sample produces a directory numbered by processing order (e.g. `test_results/<exp_name>/epoch_0001/0001_<image_stem>/`) containing three PNGs:
 
 - `input.png` — the raw blended input frame.
 - `t_output.png` — the predicted transmission layer.
