@@ -70,6 +70,14 @@ uv run python main.py \
 --use_amp \
 --exp_name dinov3_vits16
 ```
+|Value|Note|
+|:-|:-|
+|loss|The average `content loss` calculated by adding the `L1 coefficient + 0.2×perceptual + grad`. When actually updating the generator, this is multiplied by 100 and added to the next adv.|
+|percep|The average perceptual loss, which measures distance in feature space (DINO/VGG).|
+|grad|The average exclusion/gradient loss, which prevents the gradients of the transmitted image and the reflected image from overlapping.|
+|adv|The average adversarial loss (BCE), which is used to make the classifier believe the image is "real."|
+
+Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
 
 Checkpoints, intermediate predictions, `train.log`, and TensorBoard summaries (saved directly inside `runs/dinov3_vits16/`) are all stored under `runs/dinov3_vits16/`. Launch TensorBoard via:
 
