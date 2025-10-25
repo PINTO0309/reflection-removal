@@ -1,7 +1,7 @@
 [project]
-name = "perceptual-reflection-removal"
+name = "reflection-removal"
 version = "1.0.0"
-description = "Add your description here"
+description = "A model for removing reflections using a single image."
 readme = "README.md"
 requires-python = "==3.11.12"
 dependencies = [
