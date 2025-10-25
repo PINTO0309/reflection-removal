@@ -79,6 +79,14 @@ uv run python main.py \
 
 Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
 
+## Interpreting the Loss Components
+
+- **Content vs. adversarial balance**: For each generator update we optimise
+  `content_loss = L1(reflection) + 0.2 × perceptual + grad`, and the actual objective that is backpropagated is `total_g = 100 × content_loss + adv`. A rise in `loss` usually means the reconstruction terms need attention; a rise in `adv` means the discriminator is currently winning.
+- **Synthetic vs. real batches**: When training on synthetic pairs both the transmission and reflection branches contribute to the perceptual/L1 terms, so `loss` should generally be higher than during real batches (where reflection supervision is zero). Expect `grad` to be non-zero only for synthetic samples.
+- **Healthy dynamics**: You want `loss`, `percep`, and `grad` to trend downward slowly while `adv` oscillates. If all climb together, the model is diverging. If `adv` collapses near 0 while others stagnate, the discriminator may be too weak—lower its learning rate or add more synthetic data. If `adv` stays very high but the other terms shrink, the discriminator is too strong—consider reducing the GAN weight (e.g., scaling the final `+ adv`) or adding label smoothing.
+- **Practical monitoring**: Track the logged scalars in TensorBoard. Focus on the moving averages per epoch; transient spikes after checkpoint saves are normal. Compare checkpoints by running `--test_only` so you can visually confirm whether changes in the metrics translate to better separation.
+
 Checkpoints, intermediate predictions, `train.log`, and TensorBoard summaries (saved directly inside `runs/dinov3_vits16/`) are all stored under `runs/dinov3_vits16/`. Launch TensorBoard via:
 
 ```bash
