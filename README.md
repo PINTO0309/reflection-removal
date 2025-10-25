@@ -87,6 +87,10 @@ Therefore, the loss display is not the final total loss, but an indicator for ch
 - **Healthy dynamics**: You want `loss`, `percep`, and `grad` to trend downward slowly while `adv` oscillates. If all climb together, the model is diverging. If `adv` collapses near 0 while others stagnate, the discriminator may be too weak—lower its learning rate or add more synthetic data. If `adv` stays very high but the other terms shrink, the discriminator is too strong—consider reducing the GAN weight (e.g., scaling the final `+ adv`) or adding label smoothing.
 - **Practical monitoring**: Track the logged scalars in TensorBoard. Focus on the moving averages per epoch; transient spikes after checkpoint saves are normal. Compare checkpoints by running `--test_only` so you can visually confirm whether changes in the metrics translate to better separation.
 
+## Per-Epoch Validation Dumps
+
+After every training epoch the current generator runs inference on the images specified by `--test_dir`, and the outputs are written to `test_results/<exp_name>/epoch_<NNNN>/`. If `--test_dir` does not resolve to any images, the script falls back to a fixed set of up to 10 blended inputs gathered from `--data_real_dir`, so you still get a consistent visual trace of progress across epochs. Clean up these folders periodically if disk usage grows too large.
+
 Checkpoints, intermediate predictions, `train.log`, and TensorBoard summaries (saved directly inside `runs/dinov3_vits16/`) are all stored under `runs/dinov3_vits16/`. Launch TensorBoard via:
 
 ```bash
@@ -103,7 +107,7 @@ tensorboard --logdir runs
 
 `--save_model_freq`: frequency to save model and the output images
 
-`--keep_checkpoint_history`: number of saved checkpoint epochs to retain (0 keeps all)
+`--keep_checkpoint_history`: number of saved checkpoint epochs (`epoch_<NNNN>` folders under `runs/<exp_name>/`) to retain (0 keeps all)
 
 `--is_hyper`: whether to use hypercolumn features as input, all our trained models uses hypercolumn features as input
 

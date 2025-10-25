@@ -307,11 +307,58 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
     }, exp_dir / "generator.pt")
 
 
+def evaluate_samples(generator: HypercolumnGenerator,
+                     device: torch.device,
+                     images: List[Path],
+                     results_root: Path,
+                     epoch: int,
+                     use_amp: bool) -> None:
+    if not images:
+        return
+
+    was_training = generator.training
+    generator.eval()
+    generator.feature_extractor.eval()
+
+    epoch_dir = results_root / f"epoch_{epoch:04d}"
+    epoch_dir.mkdir(parents=True, exist_ok=True)
+
+    for image_path in images:
+        img = load_image(image_path)
+        if img is None:
+            continue
+        tensor = image_to_tensor(img).unsqueeze(0).to(device)
+        with torch.no_grad():
+            with torch.amp.autocast("cuda", enabled=use_amp):
+                pred_t, pred_r = generator(tensor)
+        pred_t_img = tensor_to_image(pred_t[0])
+        pred_r_img = tensor_to_image(pred_r[0])
+
+        subdir = epoch_dir / image_path.stem
+        subdir.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(subdir / "input.png"),
+                    (np.clip(img, 0, 1) * 255.0).astype(np.uint8))
+        cv2.imwrite(str(subdir / "t_output.png"), pred_t_img)
+        cv2.imwrite(str(subdir / "r_output.png"), pred_r_img)
+
+    if was_training:
+        generator.train()
+        generator.feature_extractor.eval()
+
+
 def prune_checkpoints(exp_dir: Path, max_keep: int) -> None:
     if max_keep <= 0:
         return
+    def is_epoch_dir(path: Path) -> bool:
+        name = path.name
+        if name.isdigit():
+            return True
+        if name.startswith("epoch_") and name[6:].isdigit():
+            return True
+        return False
+
     checkpoint_dirs = sorted(
-        [path for path in exp_dir.iterdir() if path.is_dir() and path.name.isdigit()]
+        [path for path in exp_dir.iterdir() if path.is_dir() and is_epoch_dir(path)]
     )
     excess = len(checkpoint_dirs) - max_keep
     for old_dir in checkpoint_dirs[:excess]:
@@ -432,6 +479,24 @@ def train(args: argparse.Namespace) -> None:
                 optimizer_d, args.backbone
             )
             log(f"[i] Resuming training from epoch {start_epoch}")
+
+        validation_images: List[Path] = []
+        test_roots = collect_roots(args.test_dir)
+        eval_images = prepare_test_images(test_roots)
+        if eval_images:
+            log(f"[i] Using {len(eval_images)} validation images from --test_dir")
+            validation_images = eval_images
+        else:
+            fallback = real_inputs[:10]
+            if fallback:
+                log(f"[w] No validation images under {args.test_dir}; using {len(fallback)} real inputs for validation.")
+                validation_images = fallback
+            else:
+                log("[w] No validation images available; per-epoch evaluation disabled.")
+
+        results_root = get_results_dir(args.exp_name)
+        if validation_images:
+            results_root.mkdir(parents=True, exist_ok=True)
 
         sigmas = list(np.linspace(1, 5, 80))
         steps_per_epoch = max(len(syn_t) + len(real_inputs), 1)
@@ -569,7 +634,7 @@ def train(args: argparse.Namespace) -> None:
             if args.save_model_freq > 0 and epoch % args.save_model_freq == 0:
                 save_checkpoint(exp_dir, epoch, generator, discriminator,
                                 optimizer_g, optimizer_d, args.backbone)
-                epoch_dir = exp_dir / f"{epoch:04d}"
+                epoch_dir = exp_dir / f"epoch_{epoch:04d}"
                 epoch_dir.mkdir(parents=True, exist_ok=True)
                 torch.save({
                     "epoch": epoch,
@@ -585,6 +650,11 @@ def train(args: argparse.Namespace) -> None:
                                 last_snapshot["pred_t"], last_snapshot["pred_r"])
                 log(f"[i] Saved checkpoint to {epoch_dir}")
                 prune_checkpoints(exp_dir, args.keep_checkpoint_history)
+
+            if validation_images:
+                log(f"[i] Running validation inference for epoch {epoch:03d}")
+                evaluate_samples(generator, device, validation_images,
+                                 results_root, epoch, use_amp)
     finally:
         writer.flush()
         writer.close()
