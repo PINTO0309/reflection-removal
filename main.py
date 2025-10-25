@@ -1,5 +1,6 @@
 import argparse
 import random
+import shutil
 import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -29,14 +30,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data_syn_dir", default="", help="comma separated list of synthetic dataset roots")
     parser.add_argument("--data_real_dir", default="", help="comma separated list of real dataset roots")
     parser.add_argument("--save_model_freq", type=int, default=1, help="save model frequency (epochs)")
+    parser.add_argument("--keep_checkpoint_history", type=int, default=20, help="number of saved checkpoint epochs to retain (0 keeps all)")
     parser.add_argument("--is_hyper", type=int, default=1, help="use hypercolumn features (1|0)")
     parser.add_argument("--test_only", action="store_true", help="run inference only (skip training)")
     parser.add_argument("--continue_training", action="store_true", help="resume training from the checkpoint stored under runs/--exp_name")
     parser.add_argument("--epochs", type=int, default=100, help="number of training epochs")
     parser.add_argument("--device", default=None, help="device identifier (e.g. cuda:0)")
     parser.add_argument("--seed", type=int, default=42, help="random seed")
-    parser.add_argument("--log_interval", type=int, default=20, help="iterations between logging updates")
-    parser.add_argument("--test_dir", default="./test_images/CEILNet", help="comma separated list of directories for evaluation")
+    parser.add_argument("--log_interval", type=int, default=100, help="iterations between logging updates")
+    parser.add_argument("--test_dir", default="./test_images", help="comma separated list of directories for evaluation")
     parser.add_argument("--backbone", default="dinov3_vits16", choices=BACKBONE_CHOICES, help="feature backbone for hypercolumns and perceptual loss")
     parser.add_argument("--ckpt_dir", default="ckpts", help="directory for optional pretrained backbone weights")
     parser.add_argument("--use_amp", action="store_true", help="enable automatic mixed precision during train/test")
@@ -305,6 +307,17 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
     }, exp_dir / "generator.pt")
 
 
+def prune_checkpoints(exp_dir: Path, max_keep: int) -> None:
+    if max_keep <= 0:
+        return
+    checkpoint_dirs = sorted(
+        [path for path in exp_dir.iterdir() if path.is_dir() and path.name.isdigit()]
+    )
+    excess = len(checkpoint_dirs) - max_keep
+    for old_dir in checkpoint_dirs[:excess]:
+        shutil.rmtree(old_dir, ignore_errors=True)
+
+
 def resume_from_checkpoint(
     exp_dir: Path, device: torch.device,
     generator: HypercolumnGenerator,
@@ -571,6 +584,7 @@ def train(args: argparse.Namespace) -> None:
                                 last_snapshot["input"],
                                 last_snapshot["pred_t"], last_snapshot["pred_r"])
                 log(f"[i] Saved checkpoint to {epoch_dir}")
+                prune_checkpoints(exp_dir, args.keep_checkpoint_history)
     finally:
         writer.flush()
         writer.close()

@@ -95,6 +95,8 @@ tensorboard --logdir runs
 
 `--save_model_freq`: frequency to save model and the output images
 
+`--keep_checkpoint_history`: number of saved checkpoint epochs to retain (0 keeps all)
+
 `--is_hyper`: whether to use hypercolumn features as input, all our trained models uses hypercolumn features as input
 
 `--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`)
