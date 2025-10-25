@@ -279,13 +279,15 @@ class DINOFeatureExtractor(FeatureExtractorBase):
         fallback_spec = _format_repo(repo, fallback_ref) if fallback_ref else None
 
         def _load(repo_or_dir: str) -> nn.Module:
-            return torch.hub.load(
-                repo_or_dir=repo_or_dir,
-                model=self.arch,
-                source="github",
-                weights=self.weights_path,
-                trust_repo=True,
-            )
+            hub_kwargs = {
+                "repo_or_dir": repo_or_dir,
+                "model": self.arch,
+                "source": "github",
+                "trust_repo": True,
+            }
+            if self.weights_path:
+                hub_kwargs["weights"] = self.weights_path
+            return torch.hub.load(**hub_kwargs)
 
         try:
             return _load(repo_spec)
