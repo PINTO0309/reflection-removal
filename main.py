@@ -633,17 +633,18 @@ def train(args: argparse.Namespace) -> None:
 
                 fake_t_vis = fake_t.detach().float()
                 fake_r_vis = fake_r.detach().float()
-                snapshot = {
-                    "input": np.copy(sample["input"]),
-                    "pred_t": tensor_to_image(fake_t_vis[0]),
-                    "pred_r": tensor_to_image(fake_r_vis[0]),
-                    "file_id": sample["file_id"],
-                }
-                if len(vis_snapshots) < VISUAL_SNAPSHOTS_PER_EPOCH:
-                    vis_snapshots.append(snapshot)
-                else:
-                    replace_idx = (step - 1) % VISUAL_SNAPSHOTS_PER_EPOCH
-                    vis_snapshots[replace_idx] = snapshot
+                if VISUAL_SNAPSHOTS_PER_EPOCH > 0:
+                    snapshot = {
+                        "input": np.copy(sample["input"]),
+                        "pred_t": tensor_to_image(fake_t_vis[0]),
+                        "pred_r": tensor_to_image(fake_r_vis[0]),
+                        "file_id": sample["file_id"],
+                    }
+                    if len(vis_snapshots) < VISUAL_SNAPSHOTS_PER_EPOCH:
+                        vis_snapshots.append(snapshot)
+                    else:
+                        replace_idx = (step - 1) % VISUAL_SNAPSHOTS_PER_EPOCH
+                        vis_snapshots[replace_idx] = snapshot
 
             mean_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
             mean_percep = float(np.mean(epoch_percep)) if epoch_percep else 0.0
