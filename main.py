@@ -34,7 +34,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data_real_dir", default="", help="comma separated list of real dataset roots")
     parser.add_argument("--save_model_freq", type=int, default=1, help="save model frequency (epochs)")
     parser.add_argument("--keep_checkpoint_history", type=int, default=20, help="number of saved checkpoint epochs to retain (0 keeps all)")
-    parser.add_argument("--is_hyper", type=int, default=1, help="use hypercolumn features (1|0)")
     parser.add_argument("--test_only", action="store_true", help="run inference only (skip training)")
     parser.add_argument("--resume", action="store_true", help="resume training from the checkpoint stored under runs/--exp_name")
     parser.add_argument("--epochs", type=int, default=100, help="number of training epochs")
@@ -453,7 +452,7 @@ def train(args: argparse.Namespace) -> None:
         torch.cuda.manual_seed_all(args.seed)
         torch.backends.cudnn.benchmark = True
 
-    use_hyper = args.is_hyper == 1
+    use_hyper = True
     ckpt_root = resolve_path(args.ckpt_dir)
     exp_dir = get_experiment_dir(args.exp_name)
     exp_dir.mkdir(parents=True, exist_ok=True)
@@ -701,9 +700,7 @@ def inference(args: argparse.Namespace) -> None:
     device = torch.device(args.device if args.device else
                           ("cuda" if torch.cuda.is_available() else "cpu"))
     ckpt_root = resolve_path(args.ckpt_dir)
-    feature_extractor = create_feature_extractor(args.backbone,
-                                                 args.is_hyper == 1,
-                                                 ckpt_root)
+    feature_extractor = create_feature_extractor(args.backbone, True, ckpt_root)
     generator = HypercolumnGenerator(feature_extractor).to(device)
     generator.eval()
     generator.feature_extractor.eval()

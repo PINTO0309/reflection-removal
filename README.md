@@ -116,9 +116,7 @@ tensorboard --logdir runs
 
 `--keep_checkpoint_history`: number of saved checkpoint epochs (`epoch_<NNNN>` folders under `runs/<exp_name>/`) to retain (0 keeps all)
 
-`--is_hyper`: whether to use hypercolumn features as input, all our trained models uses hypercolumn features as input
-
-`--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`)
+`--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
 
 `--ckpt_dir`: directory where backbone checkpoints are searched (default `ckpts`)
 
