@@ -22,6 +22,9 @@ from models import (DINOFeatureExtractor, FeatureExtractorBase,
 IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.ppm', '.bmp'}
 GAUSSIAN_MASK = None
 BACKBONE_CHOICES = ["vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"]
+VISUAL_SNAPSHOTS_PER_EPOCH = 0
+PROJECT_ROOT = Path(__file__).resolve().parent
+RUNS_ROOT = PROJECT_ROOT / "runs"
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,19 +53,15 @@ def get_experiment_dir(exp_name: str) -> Path:
     if exp_path.is_absolute():
         return exp_path
     if exp_path.parts and exp_path.parts[0] == "runs":
-        return exp_path
-    return Path("runs") / exp_path
-
-
-def get_results_dir(exp_name: str) -> Path:
-    exp_path = Path(exp_name)
-    if exp_path.is_absolute():
         exp_path = Path(*exp_path.parts[1:])
-    if any(part == ".." for part in exp_path.parts):
-        raise ValueError("--exp_name must not contain '..'")
-    if not exp_path.parts:
-        return Path("test_results") / "default"
-    return Path("test_results") / exp_path
+    return RUNS_ROOT / exp_path
+
+
+def resolve_path(path_like: str | Path) -> Path:
+    path = Path(path_like).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path) -> FeatureExtractorBase:
@@ -79,7 +78,7 @@ def collect_roots(path_string: str) -> List[Path]:
     for fragment in path_string.split(','):
         fragment = fragment.strip()
         if fragment:
-            roots.append(Path(fragment))
+            roots.append(resolve_path(fragment))
     return roots
 
 
@@ -278,14 +277,27 @@ def ensure_valid_sample(sample: Dict) -> bool:
 
 
 def save_images(epoch_dir: Path, file_id: str, input_img: np.ndarray,
-                pred_t: np.ndarray, pred_r: np.ndarray) -> None:
-    result_dir = epoch_dir / file_id
+                pred_t: np.ndarray, pred_r: np.ndarray,
+                index: Optional[int] = None) -> None:
+    def to_uint8(image: np.ndarray) -> np.ndarray:
+        if image.dtype == np.uint8:
+            return image
+        if np.issubdtype(image.dtype, np.floating):
+            if image.max() <= 1.0 + 1e-5:
+                scaled = np.clip(image, 0.0, 1.0) * 255.0
+            else:
+                scaled = np.clip(image, 0.0, 255.0)
+        else:
+            scaled = np.clip(image, 0, 255)
+        return scaled.astype(np.uint8)
+
+    prefix = f"{index:04d}_" if index is not None else ""
+    result_dir = epoch_dir / f"{prefix}{file_id}"
     result_dir.mkdir(parents=True, exist_ok=True)
 
-    cv2.imwrite(str(result_dir / "int_t.png"),
-                (np.clip(input_img, 0, 1) * 255.0).astype(np.uint8))
-    cv2.imwrite(str(result_dir / "out_t.png"), pred_t)
-    cv2.imwrite(str(result_dir / "out_r.png"), pred_r)
+    cv2.imwrite(str(result_dir / "input.png"), to_uint8(input_img))
+    cv2.imwrite(str(result_dir / "t_output.png"), to_uint8(pred_t))
+    cv2.imwrite(str(result_dir / "r_output.png"), to_uint8(pred_r))
 
 
 def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
@@ -429,7 +441,7 @@ def train(args: argparse.Namespace) -> None:
         torch.backends.cudnn.benchmark = True
 
     use_hyper = args.is_hyper == 1
-    ckpt_root = Path(args.ckpt_dir)
+    ckpt_root = resolve_path(args.ckpt_dir)
     exp_dir = get_experiment_dir(args.exp_name)
     exp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -514,7 +526,7 @@ def train(args: argparse.Namespace) -> None:
 
             step = 0
             attempts = 0
-            last_snapshot = None
+            vis_snapshots: List[Dict[str, np.ndarray]] = []
 
             while step < steps_per_epoch:
                 attempts += 1
@@ -608,13 +620,17 @@ def train(args: argparse.Namespace) -> None:
 
                 fake_t_vis = fake_t.detach().float()
                 fake_r_vis = fake_r.detach().float()
-                last_snapshot = {
-                    "input": sample["input"],
+                snapshot = {
+                    "input": np.copy(sample["input"]),
                     "pred_t": tensor_to_image(fake_t_vis[0]),
                     "pred_r": tensor_to_image(fake_r_vis[0]),
-                    "target": tensor_to_image(target_t_tensor[0]),
                     "file_id": sample["file_id"],
                 }
+                if len(vis_snapshots) < VISUAL_SNAPSHOTS_PER_EPOCH:
+                    vis_snapshots.append(snapshot)
+                else:
+                    replace_idx = (step - 1) % VISUAL_SNAPSHOTS_PER_EPOCH
+                    vis_snapshots[replace_idx] = snapshot
 
             mean_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
             mean_percep = float(np.mean(epoch_percep)) if epoch_percep else 0.0
@@ -644,10 +660,16 @@ def train(args: argparse.Namespace) -> None:
                     "optimizer_d": optimizer_d.state_dict(),
                     "backbone": args.backbone,
                 }, epoch_dir / "checkpoint.pt")
-                if last_snapshot is not None:
-                    save_images(epoch_dir, last_snapshot["file_id"],
-                                last_snapshot["input"],
-                                last_snapshot["pred_t"], last_snapshot["pred_r"])
+                if vis_snapshots:
+                    for idx, snapshot in enumerate(vis_snapshots, start=1):
+                        save_images(
+                            epoch_dir,
+                            snapshot["file_id"],
+                            snapshot["input"],
+                            snapshot["pred_t"],
+                            snapshot["pred_r"],
+                            index=idx,
+                        )
                 log(f"[i] Saved checkpoint to {epoch_dir}")
                 prune_checkpoints(exp_dir, args.keep_checkpoint_history)
 
@@ -664,7 +686,7 @@ def train(args: argparse.Namespace) -> None:
 def inference(args: argparse.Namespace) -> None:
     device = torch.device(args.device if args.device else
                           ("cuda" if torch.cuda.is_available() else "cpu"))
-    ckpt_root = Path(args.ckpt_dir)
+    ckpt_root = resolve_path(args.ckpt_dir)
     feature_extractor = create_feature_extractor(args.backbone,
                                                  args.is_hyper == 1,
                                                  ckpt_root)
@@ -684,9 +706,6 @@ def inference(args: argparse.Namespace) -> None:
     if not images:
         print(f"[!] No test images found under {args.test_dir}")
         return
-
-    results_root = get_results_dir(args.exp_name)
-    results_root.mkdir(parents=True, exist_ok=True)
 
     for image_path in images:
         img = load_image(image_path)
