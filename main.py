@@ -57,6 +57,11 @@ def get_experiment_dir(exp_name: str) -> Path:
     return RUNS_ROOT / exp_path
 
 
+def get_results_dir(exp_name: str) -> Path:
+    """Base directory for per-epoch validation outputs."""
+    return get_experiment_dir(exp_name)
+
+
 def resolve_path(path_like: str | Path) -> Path:
     path = Path(path_like).expanduser()
     if path.is_absolute():
@@ -706,6 +711,9 @@ def inference(args: argparse.Namespace) -> None:
     if not images:
         print(f"[!] No test images found under {args.test_dir}")
         return
+
+    results_root = exp_dir / f"epoch_{0:04d}"
+    results_root.mkdir(parents=True, exist_ok=True)
 
     for image_path in images:
         img = load_image(image_path)

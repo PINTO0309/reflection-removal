@@ -2,6 +2,7 @@ __pycache__/
 *dataset/
 runs/
 test_images/
+test_results/
 *.tar.gz
 *.pth
 *.onnx
