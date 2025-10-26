@@ -254,7 +254,9 @@ def prepare_synthetic_sample(idx: int, transmissions: List[Path], reflections: L
     if syn_t is None or syn_r is None:
         return None
 
-    new_w = random.randint(256, 480)
+    min_width, max_width, width_step = 256, 640, 16
+    max_step = (max_width - min_width) // width_step
+    new_w = min_width + width_step * random.randint(0, max_step)
     syn_t = resize_with_aspect(syn_t, new_w)
     syn_r = resize_with_aspect(syn_r, new_w)
 
@@ -279,7 +281,9 @@ def prepare_real_sample(idx: int, blends: List[Path], transmissions: List[Path])
     if input_img is None or target_t is None:
         return None
 
-    new_w = random.randint(256, 480)
+    min_width, max_width, width_step = 256, 640, 16
+    max_step = (max_width - min_width) // width_step
+    new_w = min_width + width_step * random.randint(0, max_step)
     input_img = resize_with_aspect(input_img, new_w)
     target_t = resize_with_aspect(target_t, new_w)
 
