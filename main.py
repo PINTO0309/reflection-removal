@@ -205,10 +205,11 @@ def syn_data(t: np.ndarray, r: np.ndarray, sigma: float) -> Tuple[np.ndarray, np
 
 
 def load_image(path: Path) -> Optional[np.ndarray]:
-    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-    if img is None:
+    img_bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if img_bgr is None:
         return None
-    return np.float32(img) / 255.0
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    return np.float32(img_rgb) / 255.0
 
 
 def resize_with_aspect(img: np.ndarray, width: int) -> np.ndarray:
@@ -226,6 +227,26 @@ def tensor_to_image(tensor: torch.Tensor) -> np.ndarray:
     tensor = torch.clamp(tensor, 0.0, 1.0)
     arr = tensor.permute(1, 2, 0).numpy()
     return (arr * 255.0).astype(np.uint8)
+
+
+def to_uint8(image: np.ndarray) -> np.ndarray:
+    if image.dtype == np.uint8:
+        return image
+    if np.issubdtype(image.dtype, np.floating):
+        if image.max() <= 1.0 + 1e-5:
+            scaled = np.clip(image, 0.0, 1.0) * 255.0
+        else:
+            scaled = np.clip(image, 0.0, 255.0)
+    else:
+        scaled = np.clip(image, 0, 255)
+    return scaled.astype(np.uint8)
+
+
+def write_rgb_image(path: Path, image: np.ndarray) -> None:
+    data = to_uint8(image)
+    if data.ndim == 3 and data.shape[2] == 3:
+        data = cv2.cvtColor(data, cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(path), data)
 
 
 def prepare_synthetic_sample(idx: int, transmissions: List[Path], reflections: List[Path], sigmas: List[float]) -> Optional[Dict]:
@@ -284,25 +305,13 @@ def ensure_valid_sample(sample: Dict) -> bool:
 def save_images(epoch_dir: Path, file_id: str, input_img: np.ndarray,
                 pred_t: np.ndarray, pred_r: np.ndarray,
                 index: Optional[int] = None) -> None:
-    def to_uint8(image: np.ndarray) -> np.ndarray:
-        if image.dtype == np.uint8:
-            return image
-        if np.issubdtype(image.dtype, np.floating):
-            if image.max() <= 1.0 + 1e-5:
-                scaled = np.clip(image, 0.0, 1.0) * 255.0
-            else:
-                scaled = np.clip(image, 0.0, 255.0)
-        else:
-            scaled = np.clip(image, 0, 255)
-        return scaled.astype(np.uint8)
-
     prefix = f"{index:04d}_" if index is not None else ""
     result_dir = epoch_dir / f"{prefix}{file_id}"
     result_dir.mkdir(parents=True, exist_ok=True)
 
-    cv2.imwrite(str(result_dir / "input.png"), to_uint8(input_img))
-    cv2.imwrite(str(result_dir / "t_output.png"), to_uint8(pred_t))
-    cv2.imwrite(str(result_dir / "r_output.png"), to_uint8(pred_r))
+    write_rgb_image(result_dir / "input.png", input_img)
+    write_rgb_image(result_dir / "t_output.png", pred_t)
+    write_rgb_image(result_dir / "r_output.png", pred_r)
 
 
 def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
@@ -353,10 +362,9 @@ def evaluate_samples(generator: HypercolumnGenerator,
 
         subdir = epoch_dir / f"{idx:04d}_{image_path.stem}"
         subdir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(subdir / "input.png"),
-                    (np.clip(img, 0, 1) * 255.0).astype(np.uint8))
-        cv2.imwrite(str(subdir / "t_output.png"), pred_t_img)
-        cv2.imwrite(str(subdir / "r_output.png"), pred_r_img)
+        write_rgb_image(subdir / "input.png", img)
+        write_rgb_image(subdir / "t_output.png", pred_t_img)
+        write_rgb_image(subdir / "r_output.png", pred_r_img)
 
     if was_training:
         generator.train()
@@ -731,10 +739,9 @@ def inference(args: argparse.Namespace) -> None:
 
         subdir = results_root / image_path.stem
         subdir.mkdir(parents=True, exist_ok=True)
-        cv2.imwrite(str(subdir / "input.png"),
-                    (np.clip(img, 0, 1) * 255.0).astype(np.uint8))
-        cv2.imwrite(str(subdir / "t_output.png"), pred_t_img)
-        cv2.imwrite(str(subdir / "r_output.png"), pred_r_img)
+        write_rgb_image(subdir / "input.png", img)
+        write_rgb_image(subdir / "t_output.png", pred_t_img)
+        write_rgb_image(subdir / "r_output.png", pred_r_img)
 
 
 def main() -> None:

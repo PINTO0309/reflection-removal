@@ -182,8 +182,7 @@ class VGGFeatureExtractor(FeatureExtractorBase):
         return sum(self._LAYER_DIMS[layer] for layer in self._HYPER_LAYERS)
 
     def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
-        x_rgb = x[:, [2, 1, 0], :, :]
-        x_norm = (x_rgb - self.mean) / self.std
+        x_norm = (x - self.mean) / self.std
         if not require_grad:
             x_norm = x_norm.detach()
 
@@ -348,8 +347,7 @@ class DINOFeatureExtractor(FeatureExtractorBase):
 
     def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
         self._feature_cache = {}
-        x_rgb = x[:, [2, 1, 0], :, :]
-        x_norm = (x_rgb - self.mean) / self.std
+        x_norm = (x - self.mean) / self.std
         if not require_grad:
             x_norm = x_norm.detach()
 
