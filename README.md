@@ -15,6 +15,7 @@ source .venv/bin/activate
 * To use the DINOv3 backbones (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`), place the provided checkpoints inside `./ckps/` (files named `dinov3_*_pretrain_lvd1689m-*.pth`). If the files are missing, they will be downloaded automatically through `torch.hub`.
 
 ## Dataset
+https://github.com/ceciliavision/perceptual-reflection-removal?tab=readme-ov-file#dataset
 
 ```
 reflection-dataset/
