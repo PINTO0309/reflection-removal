@@ -332,12 +332,14 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
     }, exp_dir / "generator.pt")
 
 
-def evaluate_samples(generator: HypercolumnGenerator,
-                     device: torch.device,
-                     images: List[Path],
-                     results_root: Path,
-                     epoch: int,
-                     use_amp: bool) -> None:
+def evaluate_samples(
+    generator: HypercolumnGenerator,
+    device: torch.device,
+    images: List[Path],
+    results_root: Path,
+    epoch: int,
+    use_amp: bool
+) -> None:
     if not images:
         return
 
@@ -688,8 +690,7 @@ def train(args: argparse.Namespace) -> None:
 
             if validation_images:
                 log(f"[i] Running validation inference for epoch {epoch:03d}")
-                evaluate_samples(generator, device, validation_images,
-                                 results_root, epoch, use_amp)
+                evaluate_samples(generator, device, validation_images, results_root, epoch, use_amp)
     finally:
         writer.flush()
         writer.close()
@@ -697,8 +698,7 @@ def train(args: argparse.Namespace) -> None:
 
 
 def inference(args: argparse.Namespace) -> None:
-    device = torch.device(args.device if args.device else
-                          ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     ckpt_root = resolve_path(args.ckpt_dir)
     feature_extractor = create_feature_extractor(args.backbone, True, ckpt_root)
     generator = HypercolumnGenerator(feature_extractor).to(device)

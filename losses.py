@@ -12,9 +12,11 @@ def compute_l1_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     return F.l1_loss(pred, target)
 
 
-def compute_perceptual_loss(feature_extractor: FeatureExtractorBase,
-                            pred: torch.Tensor,
-                            target: torch.Tensor) -> torch.Tensor:
+def compute_perceptual_loss(
+    feature_extractor: FeatureExtractorBase,
+    pred: torch.Tensor,
+    target: torch.Tensor
+) -> torch.Tensor:
     pred_feats = feature_extractor.extract_features(pred, require_grad=True)
     with torch.no_grad():
         target_feats = feature_extractor.extract_features(target, require_grad=False)
@@ -31,7 +33,11 @@ def compute_gradient(img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     return gradx, grady
 
 
-def compute_exclusion_loss(img1: torch.Tensor, img2: torch.Tensor, level: int = 3) -> torch.Tensor:
+def compute_exclusion_loss(
+    img1: torch.Tensor,
+    img2: torch.Tensor,
+    level: int = 3
+) -> torch.Tensor:
     gradx_losses = []
     grady_losses = []
     cur_img1, cur_img2 = img1, img2
