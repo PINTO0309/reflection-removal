@@ -531,11 +531,12 @@ def train(args: argparse.Namespace) -> None:
         log(f"[i] Using backbone: {args.backbone}")
 
         use_distillation = (feature_distill_weight > 0.0 or pixel_distill_weight > 0.0)
+        if use_distillation and (not args.distill_teacher_backbone or not args.distill_teacher_checkpoint):
+            log("[w] Distillation weights are non-zero, but teacher backbone/checkpoint not provided; disabling distillation.")
+            feature_distill_weight = 0.0
+            pixel_distill_weight = 0.0
+            use_distillation = False
         if use_distillation:
-            if not args.distill_teacher_backbone:
-                raise ValueError("Distillation requested but --distill_teacher_backbone was not provided.")
-            if not args.distill_teacher_checkpoint:
-                raise ValueError("Distillation requested but --distill_teacher_checkpoint was not provided.")
             teacher_feature_extractor = create_feature_extractor(
                 args.distill_teacher_backbone, use_hyper, ckpt_root
             )
