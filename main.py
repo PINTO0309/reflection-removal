@@ -8,9 +8,10 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
-from torch import nn
 from torch import amp
+from torch import nn
 import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 
 from discriminator import PatchDiscriminator
@@ -24,6 +25,7 @@ IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.ppm', '.bmp'}
 GAUSSIAN_MASK = None
 BACKBONE_CHOICES = ["vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"]
 VISUAL_SNAPSHOTS_PER_EPOCH = 0
+GRAD_CLIP_NORM = 5.0
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNS_ROOT = PROJECT_ROOT / "runs"
 
@@ -576,9 +578,10 @@ def train(args: argparse.Namespace) -> None:
         if feature_projector is not None:
             trainable_params = list(generator.parameters()) + list(feature_projector.parameters())
         else:
-            trainable_params = generator.parameters()
+            trainable_params = list(generator.parameters())
+        disc_params = list(discriminator.parameters())
         optimizer_g = torch.optim.Adam(trainable_params, lr=2e-4, betas=(0.5, 0.999))
-        optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=1e-4, betas=(0.5, 0.999))
+        optimizer_d = torch.optim.Adam(disc_params, lr=1e-4, betas=(0.5, 0.999))
         bce_loss = nn.BCEWithLogitsLoss()
 
         syn_roots = collect_roots(args.data_syn_dir)
@@ -661,14 +664,14 @@ def train(args: argparse.Namespace) -> None:
                 if sample is None or not ensure_valid_sample(sample):
                     continue
 
-                input_tensor = image_to_tensor(sample["input"]).unsqueeze(0).to(device)
-                target_t_tensor = image_to_tensor(sample["target_t"]).unsqueeze(0).to(device)
-                target_r_tensor = image_to_tensor(sample["target_r"]).unsqueeze(0).to(device)
+                input_tensor = image_to_tensor(sample["input"]).unsqueeze(0).to(device=device, dtype=torch.float32)
+                target_t_tensor = image_to_tensor(sample["target_t"]).unsqueeze(0).to(device=device, dtype=torch.float32)
+                target_r_tensor = image_to_tensor(sample["target_r"]).unsqueeze(0).to(device=device, dtype=torch.float32)
 
                 if step % 2 == 0:
                     optimizer_d.zero_grad(set_to_none=True)
                     with torch.no_grad():
-                        with torch.amp.autocast("cuda", enabled=use_amp):
+                        with torch.amp.autocast("cuda", enabled=False):
                             fake_t_detach, _ = generator(input_tensor)
                     with torch.amp.autocast("cuda", enabled=use_amp):
                         pred_real = discriminator(input_tensor, target_t_tensor)
@@ -676,7 +679,13 @@ def train(args: argparse.Namespace) -> None:
                         loss_real = bce_loss(pred_real, torch.ones_like(pred_real))
                         loss_fake = bce_loss(pred_fake, torch.zeros_like(pred_fake))
                         d_loss = 0.5 * (loss_real + loss_fake)
+                    if not torch.isfinite(d_loss):
+                        log(f"[w] Non-finite discriminator loss at epoch {epoch} step {step}; skipping update.")
+                        scaler_d.update()
+                        continue
                     scaler_d.scale(d_loss).backward()
+                    scaler_d.unscale_(optimizer_d)
+                    clip_grad_norm_(disc_params, GRAD_CLIP_NORM)
                     scaler_d.step(optimizer_d)
                     scaler_d.update()
 
@@ -686,7 +695,7 @@ def train(args: argparse.Namespace) -> None:
                 teacher_feature_maps: Dict[str, torch.Tensor] = {}
                 if teacher_generator is not None and (feature_distill_enabled or pixel_distill_enabled):
                     with torch.no_grad():
-                        with torch.amp.autocast("cuda", enabled=use_amp):
+                        with torch.amp.autocast("cuda", enabled=False):
                             teacher_outputs = teacher_generator(
                                 input_tensor, return_features=feature_distill_enabled
                             )
@@ -701,15 +710,17 @@ def train(args: argparse.Namespace) -> None:
                         teacher_fake_t, teacher_fake_r = teacher_outputs
                     teacher_fake_t = teacher_fake_t.detach()
                     teacher_fake_r = teacher_fake_r.detach()
-                with torch.amp.autocast("cuda", enabled=use_amp):
-                    if feature_distill_enabled:
-                        fake_t, fake_r, student_features = generator(input_tensor, return_features=True)
-                    else:
-                        fake_t, fake_r = generator(input_tensor)
-                        student_features: Dict[str, torch.Tensor] = {}
-                    pred_fake_for_g = discriminator(input_tensor, fake_t)
-                    adv_loss = bce_loss(pred_fake_for_g, torch.ones_like(pred_fake_for_g))
+                if feature_distill_enabled:
+                    fake_t, fake_r, student_features = (
+                        generator(input_tensor, return_features=True)
+                    )
+                else:
+                    fake_t, fake_r = generator(input_tensor)
+                    student_features = {}
+                fake_t = fake_t.float()
+                fake_r = fake_r.float()
 
+                with torch.amp.autocast("cuda", enabled=False):
                     percep_t = compute_perceptual_loss(feature_extractor, fake_t, target_t_tensor)
                     if sample["is_syn"]:
                         percep_r = compute_perceptual_loss(feature_extractor, fake_r, target_r_tensor)
@@ -747,9 +758,20 @@ def train(args: argparse.Namespace) -> None:
                         feature_distill_weight * feature_distill_loss
                         + pixel_distill_weight * pixel_distill_loss
                     )
-                    total_g_loss = content_loss * 100.0 + adv_loss + distill_loss
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    pred_fake_for_g = discriminator(input_tensor, fake_t)
+                    adv_loss = bce_loss(pred_fake_for_g, torch.ones_like(pred_fake_for_g))
+
+                adv_loss = adv_loss.float()
+                total_g_loss = content_loss * 100.0 + adv_loss + distill_loss
+                if not torch.isfinite(total_g_loss):
+                    log(f"[w] Non-finite generator loss at epoch {epoch} step {step}; skipping update.")
+                    scaler_g.update()
+                    continue
 
                 scaler_g.scale(total_g_loss).backward()
+                scaler_g.unscale_(optimizer_g)
+                clip_grad_norm_(trainable_params, GRAD_CLIP_NORM)
                 scaler_g.step(optimizer_g)
                 scaler_g.update()
 
