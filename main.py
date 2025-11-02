@@ -8,21 +8,24 @@ from typing import Dict, Iterable, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
-from torch import nn
 from torch import amp
+from torch import nn
+import torch.nn.functional as F
+from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard import SummaryWriter
 
 from discriminator import PatchDiscriminator
 from losses import (compute_exclusion_loss, compute_l1_loss,
                     compute_perceptual_loss)
 from models import (DINOFeatureExtractor, FeatureExtractorBase,
-                    HypercolumnGenerator, VGGFeatureExtractor)
+                    FeatureProjector, HypercolumnGenerator, VGGFeatureExtractor)
 
 
 IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.ppm', '.bmp'}
 GAUSSIAN_MASK = None
 BACKBONE_CHOICES = ["vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"]
 VISUAL_SNAPSHOTS_PER_EPOCH = 0
+GRAD_CLIP_NORM = 5.0
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNS_ROOT = PROJECT_ROOT / "runs"
 
@@ -44,6 +47,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backbone", default="dinov3_vits16", choices=BACKBONE_CHOICES, help="feature backbone for hypercolumns and perceptual loss")
     parser.add_argument("--ckpt_dir", default="ckpts", help="directory for optional pretrained backbone weights")
     parser.add_argument("--use_amp", action="store_true", help="enable automatic mixed precision during train/test")
+    parser.add_argument("--distill_teacher_backbone", default=None, choices=BACKBONE_CHOICES, help="backbone for the frozen teacher generator used in distillation")
+    parser.add_argument("--distill_teacher_checkpoint", default="", help="path to a teacher generator checkpoint (.pt or checkpoint directory)")
+    parser.add_argument("--distill_feature_weight", type=float, default=0.05, help="weight for feature-map distillation loss (MSE)")
+    parser.add_argument("--distill_pixel_weight", type=float, default=0.02, help="weight for teacher output distillation loss (L1)")
     return parser.parse_args()
 
 
@@ -319,7 +326,7 @@ def save_images(epoch_dir: Path, file_id: str, input_img: np.ndarray,
 
 def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
                     discriminator: PatchDiscriminator, optimizer_g, optimizer_d,
-                    backbone: str) -> None:
+                    backbone: str, feature_projector: Optional[nn.Module] = None) -> None:
     exp_dir.mkdir(parents=True, exist_ok=True)
     state = {
         "epoch": epoch,
@@ -329,6 +336,8 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
         "optimizer_d": optimizer_d.state_dict(),
         "backbone": backbone,
     }
+    if feature_projector is not None:
+        state["feature_projector"] = feature_projector.state_dict()
     torch.save(state, exp_dir / "checkpoint_latest.pt")
     torch.save({
         "state_dict": generator.state_dict(),
@@ -400,7 +409,8 @@ def resume_from_checkpoint(
     generator: HypercolumnGenerator,
     discriminator: PatchDiscriminator,
     optimizer_g, optimizer_d,
-    backbone: str
+    backbone: str,
+    feature_projector: Optional[nn.Module] = None
 ) -> int:
     ckpt_path = exp_dir / "checkpoint_latest.pt"
     if not ckpt_path.exists():
@@ -415,6 +425,8 @@ def resume_from_checkpoint(
     discriminator.load_state_dict(checkpoint["discriminator"])
     optimizer_g.load_state_dict(checkpoint["optimizer_g"])
     optimizer_d.load_state_dict(checkpoint["optimizer_d"])
+    if feature_projector is not None and "feature_projector" in checkpoint:
+        feature_projector.load_state_dict(checkpoint["feature_projector"])
     return int(checkpoint.get("epoch", 0)) + 1
 
 
@@ -447,6 +459,37 @@ def load_generator_for_inference(generator: HypercolumnGenerator, exp_dir: Path,
     raise FileNotFoundError(f"No generator checkpoint found in {exp_dir}")
 
 
+def load_generator_weights_from_path(
+    generator: HypercolumnGenerator,
+    checkpoint_path: Path,
+    device: torch.device,
+    backbone: str,
+) -> None:
+    if checkpoint_path.is_dir():
+        load_generator_for_inference(generator, checkpoint_path, device, backbone)
+        return
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Teacher checkpoint not found at {checkpoint_path}")
+    state = torch.load(checkpoint_path, map_location=device)
+    if isinstance(state, dict):
+        if "state_dict" in state:
+            ckpt_backbone = state.get("backbone", backbone)
+            if ckpt_backbone != backbone:
+                raise ValueError(
+                    f"Teacher checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
+                )
+            generator.load_state_dict(state["state_dict"])
+            return
+        if "generator" in state:
+            ckpt_backbone = state.get("backbone", backbone)
+            if ckpt_backbone != backbone:
+                raise ValueError(
+                    f"Teacher checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
+                )
+            generator.load_state_dict(state["generator"])
+            return
+    generator.load_state_dict(state)
+
 
 
 def train(args: argparse.Namespace) -> None:
@@ -472,6 +515,12 @@ def train(args: argparse.Namespace) -> None:
         log_file.write(message + "\\n")
         log_file.flush()
 
+    teacher_generator: Optional[HypercolumnGenerator] = None
+    feature_projector: Optional[FeatureProjector] = None
+    distill_feature_layers: List[str] = []
+    feature_distill_weight = float(args.distill_feature_weight)
+    pixel_distill_weight = float(args.distill_pixel_weight)
+
     try:
         feature_extractor = create_feature_extractor(args.backbone, use_hyper, ckpt_root)
         generator = HypercolumnGenerator(feature_extractor).to(device)
@@ -481,6 +530,45 @@ def train(args: argparse.Namespace) -> None:
         log(f"[i] Experiment directory: {exp_dir}")
         log(f"[i] Using backbone: {args.backbone}")
 
+        use_distillation = (feature_distill_weight > 0.0 or pixel_distill_weight > 0.0)
+        if use_distillation and (not args.distill_teacher_backbone or not args.distill_teacher_checkpoint):
+            log("[w] Distillation weights are non-zero, but teacher backbone/checkpoint not provided; disabling distillation.")
+            feature_distill_weight = 0.0
+            pixel_distill_weight = 0.0
+            use_distillation = False
+        if use_distillation:
+            teacher_feature_extractor = create_feature_extractor(
+                args.distill_teacher_backbone, use_hyper, ckpt_root
+            )
+            teacher_generator = HypercolumnGenerator(teacher_feature_extractor).to(device)
+            teacher_ckpt_path = resolve_path(args.distill_teacher_checkpoint)
+            load_generator_weights_from_path(
+                teacher_generator, teacher_ckpt_path, device, args.distill_teacher_backbone
+            )
+            teacher_generator.eval()
+            for param in teacher_generator.parameters():
+                param.requires_grad = False
+            log(f"[i] Loaded teacher generator ({args.distill_teacher_backbone}) from {teacher_ckpt_path}")
+            if feature_distill_weight > 0.0:
+                teacher_dims = teacher_generator.feature_extractor.layer_dims
+                student_dims = generator.feature_extractor.layer_dims
+                candidate_layers = list(generator.feature_extractor.hyper_layers)
+                if "final" in teacher_dims and "final" in student_dims:
+                    candidate_layers.append("final")
+                distill_feature_layers = [
+                    layer for layer in candidate_layers
+                    if layer in teacher_dims and layer in student_dims
+                ]
+                if distill_feature_layers:
+                    feature_projector = FeatureProjector(teacher_dims, student_dims, distill_feature_layers).to(device)
+                    log(f"[i] Feature distillation layers: {', '.join(distill_feature_layers)}")
+                else:
+                    log("[w] No overlapping feature layers found; disabling feature distillation.")
+                    feature_distill_weight = 0.0
+
+        feature_distill_enabled = feature_projector is not None and feature_distill_weight > 0.0
+        pixel_distill_enabled = teacher_generator is not None and pixel_distill_weight > 0.0
+
         use_amp = bool(args.use_amp and device.type == "cuda")
         if args.use_amp and not use_amp:
             log("[w] AMP requested but CUDA device not available; running in full precision.")
@@ -488,8 +576,13 @@ def train(args: argparse.Namespace) -> None:
         scaler_g = amp.GradScaler("cuda", enabled=use_amp)
         scaler_d = amp.GradScaler("cuda", enabled=use_amp)
 
-        optimizer_g = torch.optim.Adam(generator.parameters(), lr=2e-4, betas=(0.5, 0.999))
-        optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=1e-4, betas=(0.5, 0.999))
+        if feature_projector is not None:
+            trainable_params = list(generator.parameters()) + list(feature_projector.parameters())
+        else:
+            trainable_params = list(generator.parameters())
+        disc_params = list(discriminator.parameters())
+        optimizer_g = torch.optim.Adam(trainable_params, lr=2e-4, betas=(0.5, 0.999))
+        optimizer_d = torch.optim.Adam(disc_params, lr=1e-4, betas=(0.5, 0.999))
         bce_loss = nn.BCEWithLogitsLoss()
 
         syn_roots = collect_roots(args.data_syn_dir)
@@ -506,7 +599,8 @@ def train(args: argparse.Namespace) -> None:
             start_epoch = resume_from_checkpoint(
                 exp_dir, device, generator,
                 discriminator, optimizer_g,
-                optimizer_d, args.backbone
+                optimizer_d, args.backbone,
+                feature_projector
             )
             log(f"[i] Resuming training from epoch {start_epoch}")
 
@@ -536,11 +630,18 @@ def train(args: argparse.Namespace) -> None:
             generator.train()
             generator.feature_extractor.eval()
             discriminator.train()
+            if feature_projector is not None:
+                feature_projector.train()
+            if teacher_generator is not None:
+                teacher_generator.eval()
+                teacher_generator.feature_extractor.eval()
 
             epoch_losses: List[float] = []
             epoch_percep: List[float] = []
             epoch_grad: List[float] = []
             epoch_adv: List[float] = []
+            epoch_feat_distill: List[float] = []
+            epoch_pix_distill: List[float] = []
 
             step = 0
             attempts = 0
@@ -564,14 +665,14 @@ def train(args: argparse.Namespace) -> None:
                 if sample is None or not ensure_valid_sample(sample):
                     continue
 
-                input_tensor = image_to_tensor(sample["input"]).unsqueeze(0).to(device)
-                target_t_tensor = image_to_tensor(sample["target_t"]).unsqueeze(0).to(device)
-                target_r_tensor = image_to_tensor(sample["target_r"]).unsqueeze(0).to(device)
+                input_tensor = image_to_tensor(sample["input"]).unsqueeze(0).to(device=device, dtype=torch.float32)
+                target_t_tensor = image_to_tensor(sample["target_t"]).unsqueeze(0).to(device=device, dtype=torch.float32)
+                target_r_tensor = image_to_tensor(sample["target_r"]).unsqueeze(0).to(device=device, dtype=torch.float32)
 
                 if step % 2 == 0:
                     optimizer_d.zero_grad(set_to_none=True)
                     with torch.no_grad():
-                        with torch.amp.autocast("cuda", enabled=use_amp):
+                        with torch.amp.autocast("cuda", enabled=False):
                             fake_t_detach, _ = generator(input_tensor)
                     with torch.amp.autocast("cuda", enabled=use_amp):
                         pred_real = discriminator(input_tensor, target_t_tensor)
@@ -579,16 +680,48 @@ def train(args: argparse.Namespace) -> None:
                         loss_real = bce_loss(pred_real, torch.ones_like(pred_real))
                         loss_fake = bce_loss(pred_fake, torch.zeros_like(pred_fake))
                         d_loss = 0.5 * (loss_real + loss_fake)
+                    if not torch.isfinite(d_loss):
+                        log(f"[w] Non-finite discriminator loss at epoch {epoch} step {step}; skipping update.")
+                        scaler_d.update()
+                        continue
                     scaler_d.scale(d_loss).backward()
+                    scaler_d.unscale_(optimizer_d)
+                    clip_grad_norm_(disc_params, GRAD_CLIP_NORM)
                     scaler_d.step(optimizer_d)
                     scaler_d.update()
 
                 optimizer_g.zero_grad(set_to_none=True)
-                with torch.amp.autocast("cuda", enabled=use_amp):
+                teacher_fake_t: Optional[torch.Tensor] = None
+                teacher_fake_r: Optional[torch.Tensor] = None
+                teacher_feature_maps: Dict[str, torch.Tensor] = {}
+                if teacher_generator is not None and (feature_distill_enabled or pixel_distill_enabled):
+                    with torch.no_grad():
+                        with torch.amp.autocast("cuda", enabled=False):
+                            teacher_outputs = teacher_generator(
+                                input_tensor, return_features=feature_distill_enabled
+                            )
+                    if feature_distill_enabled:
+                        teacher_fake_t, teacher_fake_r, teacher_feats = teacher_outputs
+                        teacher_feature_maps = {
+                            name: teacher_feats[name].detach()
+                            for name in distill_feature_layers
+                            if name in teacher_feats
+                        }
+                    else:
+                        teacher_fake_t, teacher_fake_r = teacher_outputs
+                    teacher_fake_t = teacher_fake_t.detach()
+                    teacher_fake_r = teacher_fake_r.detach()
+                if feature_distill_enabled:
+                    fake_t, fake_r, student_features = (
+                        generator(input_tensor, return_features=True)
+                    )
+                else:
                     fake_t, fake_r = generator(input_tensor)
-                    pred_fake_for_g = discriminator(input_tensor, fake_t)
-                    adv_loss = bce_loss(pred_fake_for_g, torch.ones_like(pred_fake_for_g))
+                    student_features = {}
+                fake_t = fake_t.float()
+                fake_r = fake_r.float()
 
+                with torch.amp.autocast("cuda", enabled=False):
                     percep_t = compute_perceptual_loss(feature_extractor, fake_t, target_t_tensor)
                     if sample["is_syn"]:
                         percep_r = compute_perceptual_loss(feature_extractor, fake_r, target_r_tensor)
@@ -600,10 +733,46 @@ def train(args: argparse.Namespace) -> None:
                         l1_r = torch.zeros(1, device=device, dtype=fake_r.dtype)
                         grad_loss = torch.zeros(1, device=device, dtype=fake_r.dtype)
 
+                    feature_distill_loss = fake_t.new_zeros(1)
+                    pixel_distill_loss = fake_t.new_zeros(1)
+                    if feature_distill_enabled and teacher_feature_maps:
+                        projected_teacher = feature_projector(teacher_feature_maps)
+                        feat_losses = []
+                        for name in distill_feature_layers:
+                            student_map = student_features.get(name)
+                            teacher_map = projected_teacher.get(name)
+                            if student_map is None or teacher_map is None:
+                                continue
+                            teacher_map = teacher_map.to(student_map.dtype)
+                            feat_losses.append(F.mse_loss(student_map, teacher_map))
+                        if feat_losses:
+                            feature_distill_loss = torch.stack(feat_losses).mean()
+                    if pixel_distill_enabled and teacher_fake_t is not None:
+                        pixel_losses = [F.l1_loss(fake_t, teacher_fake_t.to(fake_t.dtype))]
+                        if teacher_fake_r is not None and teacher_fake_r.shape == fake_r.shape:
+                            pixel_losses.append(F.l1_loss(fake_r, teacher_fake_r.to(fake_r.dtype)))
+                        if pixel_losses:
+                            pixel_distill_loss = torch.stack(pixel_losses).mean()
+
                     content_loss = l1_r + 0.2 * perceptual_loss + grad_loss
-                    total_g_loss = content_loss * 100.0 + adv_loss
+                    distill_loss = (
+                        feature_distill_weight * feature_distill_loss
+                        + pixel_distill_weight * pixel_distill_loss
+                    )
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    pred_fake_for_g = discriminator(input_tensor, fake_t)
+                    adv_loss = bce_loss(pred_fake_for_g, torch.ones_like(pred_fake_for_g))
+
+                adv_loss = adv_loss.float()
+                total_g_loss = content_loss * 100.0 + adv_loss + distill_loss
+                if not torch.isfinite(total_g_loss):
+                    log(f"[w] Non-finite generator loss at epoch {epoch} step {step}; skipping update.")
+                    scaler_g.update()
+                    continue
 
                 scaler_g.scale(total_g_loss).backward()
+                scaler_g.unscale_(optimizer_g)
+                clip_grad_norm_(trainable_params, GRAD_CLIP_NORM)
                 scaler_g.step(optimizer_g)
                 scaler_g.update()
 
@@ -611,16 +780,26 @@ def train(args: argparse.Namespace) -> None:
                 percep_value = float(perceptual_loss.item())
                 grad_value = float(grad_loss.item())
                 adv_value = float(adv_loss.item())
+                feat_dist_value = float(feature_distill_loss.item()) if feature_distill_enabled else 0.0
+                pix_dist_value = float(pixel_distill_loss.item()) if pixel_distill_enabled else 0.0
 
                 epoch_losses.append(content_value)
                 epoch_percep.append(percep_value)
                 epoch_grad.append(grad_value)
                 epoch_adv.append(adv_value)
+                if feature_distill_enabled:
+                    epoch_feat_distill.append(feat_dist_value)
+                if pixel_distill_enabled:
+                    epoch_pix_distill.append(pix_dist_value)
 
                 writer.add_scalar("train/content_loss", content_value, global_step)
                 writer.add_scalar("train/perceptual_loss", percep_value, global_step)
                 writer.add_scalar("train/grad_loss", grad_value, global_step)
                 writer.add_scalar("train/adv_loss", adv_value, global_step)
+                if feature_distill_enabled:
+                    writer.add_scalar("train/feature_distill_loss", feat_dist_value, global_step)
+                if pixel_distill_enabled:
+                    writer.add_scalar("train/pixel_distill_loss", pix_dist_value, global_step)
 
                 step += 1
                 global_step += 1
@@ -630,11 +809,18 @@ def train(args: argparse.Namespace) -> None:
                     mean_percep = float(np.mean(epoch_percep)) if epoch_percep else 0.0
                     mean_grad = float(np.mean(epoch_grad)) if epoch_grad else 0.0
                     mean_adv = float(np.mean(epoch_adv)) if epoch_adv else 0.0
-                    log(f"[epoch {epoch:03d}] iter {step:04d}/{steps_per_epoch:04d} "
-                        f"loss: {mean_loss:.4f} "
-                        f"percep: {mean_percep:.4f} "
-                        f"grad: {mean_grad:.4f} "
-                        f"adv: {mean_adv:.4f}")
+                    mean_feat = float(np.mean(epoch_feat_distill)) if epoch_feat_distill else 0.0
+                    mean_pix = float(np.mean(epoch_pix_distill)) if epoch_pix_distill else 0.0
+                    log_msg = (f"[epoch {epoch:03d}] iter {step:04d}/{steps_per_epoch:04d} "
+                               f"loss: {mean_loss:.4f} "
+                               f"percep: {mean_percep:.4f} "
+                               f"grad: {mean_grad:.4f} "
+                               f"adv: {mean_adv:.4f}")
+                    if feature_distill_enabled:
+                        log_msg += f" feat_dist: {mean_feat:.4f}"
+                    if pixel_distill_enabled:
+                        log_msg += f" pix_dist: {mean_pix:.4f}"
+                    log(log_msg)
 
                 fake_t_vis = fake_t.detach().float()
                 fake_r_vis = fake_r.detach().float()
@@ -655,20 +841,32 @@ def train(args: argparse.Namespace) -> None:
             mean_percep = float(np.mean(epoch_percep)) if epoch_percep else 0.0
             mean_grad = float(np.mean(epoch_grad)) if epoch_grad else 0.0
             mean_adv = float(np.mean(epoch_adv)) if epoch_adv else 0.0
-            log(f"[epoch {epoch:03d}] completed "
-                f"| content {mean_loss:.4f} "
-                f"| perceptual {mean_percep:.4f} "
-                f"| grad {mean_grad:.4f} "
-                f"| adv {mean_adv:.4f}")
+            mean_feat = float(np.mean(epoch_feat_distill)) if epoch_feat_distill else 0.0
+            mean_pix = float(np.mean(epoch_pix_distill)) if epoch_pix_distill else 0.0
+            log_msg = (f"[epoch {epoch:03d}] completed "
+                       f"| content {mean_loss:.4f} "
+                       f"| perceptual {mean_percep:.4f} "
+                       f"| grad {mean_grad:.4f} "
+                       f"| adv {mean_adv:.4f}")
+            if feature_distill_enabled:
+                log_msg += f" | feat_dist {mean_feat:.4f}"
+            if pixel_distill_enabled:
+                log_msg += f" | pix_dist {mean_pix:.4f}"
+            log(log_msg)
 
             writer.add_scalar("train_epoch/content_loss", mean_loss, epoch)
             writer.add_scalar("train_epoch/perceptual_loss", mean_percep, epoch)
             writer.add_scalar("train_epoch/grad_loss", mean_grad, epoch)
             writer.add_scalar("train_epoch/adv_loss", mean_adv, epoch)
+            if feature_distill_enabled:
+                writer.add_scalar("train_epoch/feature_distill_loss", mean_feat, epoch)
+            if pixel_distill_enabled:
+                writer.add_scalar("train_epoch/pixel_distill_loss", mean_pix, epoch)
 
             if args.save_model_freq > 0 and epoch % args.save_model_freq == 0:
                 save_checkpoint(exp_dir, epoch, generator, discriminator,
-                                optimizer_g, optimizer_d, args.backbone)
+                                optimizer_g, optimizer_d, args.backbone,
+                                feature_projector)
                 epoch_dir = exp_dir / f"epoch_{epoch:04d}"
                 epoch_dir.mkdir(parents=True, exist_ok=True)
                 torch.save({
@@ -678,6 +876,7 @@ def train(args: argparse.Namespace) -> None:
                     "optimizer_g": optimizer_g.state_dict(),
                     "optimizer_d": optimizer_d.state_dict(),
                     "backbone": args.backbone,
+                    **({"feature_projector": feature_projector.state_dict()} if feature_projector is not None else {}),
                 }, epoch_dir / "checkpoint.pt")
                 if vis_snapshots:
                     for idx, snapshot in enumerate(vis_snapshots, start=1):

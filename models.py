@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
 import torch.hub
@@ -75,12 +75,20 @@ class FeatureExtractorBase(nn.Module):
     def hypercolumn_channels(self) -> int:
         raise NotImplementedError
 
+    @property
+    def layer_dims(self) -> Dict[str, int]:
+        raise NotImplementedError
+
     def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
-    def build_hypercolumns(self, x: torch.Tensor) -> torch.Tensor:
-        """Concatenate hypercolumn features with the original input."""
-        features = self.extract_features(x, require_grad=True)
+    def build_hypercolumns_with_features(
+        self,
+        x: torch.Tensor,
+        require_grad: bool = True,
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Concatenate hypercolumn features with the original input and return feature maps."""
+        features = self.extract_features(x, require_grad=require_grad)
         hyper_maps: List[torch.Tensor] = []
         for name in self.hyper_layers:
             feat = features[name]
@@ -90,7 +98,13 @@ class FeatureExtractorBase(nn.Module):
                 hyper_maps.append(feat)
             else:
                 hyper_maps.append(torch.zeros_like(feat))
-        return torch.cat(hyper_maps + [x], dim=1)
+        hyper = torch.cat(hyper_maps + [x], dim=1)
+        return hyper, features
+
+    def build_hypercolumns(self, x: torch.Tensor) -> torch.Tensor:
+        """Concatenate hypercolumn features with the original input."""
+        hyper, _ = self.build_hypercolumns_with_features(x, require_grad=True)
+        return hyper
 
 
 class HypercolumnGenerator(nn.Module):
@@ -115,8 +129,12 @@ class HypercolumnGenerator(nn.Module):
                                 nonlinearity="leaky_relu")
         nn.init.zeros_(self.conv_last.bias)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        hyper_input = self.feature_extractor.build_hypercolumns(x)
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_features: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        hyper_input, features = self.feature_extractor.build_hypercolumns_with_features(x, require_grad=True)
         net = self.conv0(hyper_input)
         net = self.conv1(net)
         net = self.conv2(net)
@@ -128,7 +146,41 @@ class HypercolumnGenerator(nn.Module):
         net = self.conv9(net)
         outputs = self.conv_last(net)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
+        if return_features:
+            return transmission, reflection, features
         return transmission, reflection
+
+
+class FeatureProjector(nn.Module):
+    """Projects teacher feature maps to match student dimensionality."""
+
+    def __init__(
+        self,
+        source_dims: Dict[str, int],
+        target_dims: Dict[str, int],
+        layers: Iterable[str],
+    ):
+        super().__init__()
+        modules: Dict[str, nn.Module] = {}
+        for name in layers:
+            src = source_dims.get(name)
+            tgt = target_dims.get(name)
+            if src is None or tgt is None:
+                continue
+            if src == tgt:
+                modules[name] = nn.Identity()
+            else:
+                conv = nn.Conv2d(src, tgt, kernel_size=1, bias=False)
+                nn.init.kaiming_normal_(conv.weight, a=0.2, nonlinearity="leaky_relu")
+                modules[name] = conv
+        self.projectors = nn.ModuleDict(modules)
+
+    def forward(self, features: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        projected: Dict[str, torch.Tensor] = {}
+        for name, module in self.projectors.items():
+            if name in features:
+                projected[name] = module(features[name])
+        return projected
 
 
 class VGGFeatureExtractor(FeatureExtractorBase):
@@ -180,6 +232,10 @@ class VGGFeatureExtractor(FeatureExtractorBase):
     @property
     def hypercolumn_channels(self) -> int:
         return sum(self._LAYER_DIMS[layer] for layer in self._HYPER_LAYERS)
+
+    @property
+    def layer_dims(self) -> Dict[str, int]:
+        return dict(self._LAYER_DIMS)
 
     def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
         x_norm = (x - self.mean) / self.std
@@ -344,6 +400,10 @@ class DINOFeatureExtractor(FeatureExtractorBase):
     @property
     def hypercolumn_channels(self) -> int:
         return sum(self._layer_dims[layer] for layer in self._hyper_layers)
+
+    @property
+    def layer_dims(self) -> Dict[str, int]:
+        return dict(self._layer_dims)
 
     def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
         self._feature_cache = {}
