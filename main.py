@@ -2,8 +2,9 @@ import argparse
 import random
 import shutil
 import time
+import warnings
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -18,7 +19,8 @@ from discriminator import PatchDiscriminator
 from losses import (compute_exclusion_loss, compute_l1_loss,
                     compute_perceptual_loss)
 from models import (DINOFeatureExtractor, FeatureExtractorBase,
-                    FeatureProjector, HypercolumnGenerator, VGGFeatureExtractor,
+                    FeatureProjector, HypercolumnGenerator,
+                    ResidualHypercolumnGenerator, VGGFeatureExtractor,
                     HGNetFeatureExtractor)
 
 
@@ -29,6 +31,119 @@ VISUAL_SNAPSHOTS_PER_EPOCH = 0
 GRAD_CLIP_NORM = 5.0
 PROJECT_ROOT = Path(__file__).resolve().parent
 RUNS_ROOT = PROJECT_ROOT / "runs"
+
+GENERATOR_VARIANT_BASELINE = "baseline"
+GENERATOR_VARIANT_RESIDUAL = "residual_skips"
+
+
+def generator_variant_name(use_residual: bool) -> str:
+    return GENERATOR_VARIANT_RESIDUAL if use_residual else GENERATOR_VARIANT_BASELINE
+
+
+def generator_variant_from_module(generator: HypercolumnGenerator) -> str:
+    if isinstance(generator, ResidualHypercolumnGenerator):
+        return GENERATOR_VARIANT_RESIDUAL
+    return GENERATOR_VARIANT_BASELINE
+
+
+def infer_variant_from_state_dict(state_dict: Dict[str, torch.Tensor]) -> str:
+    for key in state_dict.keys():
+        if key.startswith("residual_scales") or key.startswith("output_skip_scale"):
+            return GENERATOR_VARIANT_RESIDUAL
+    return GENERATOR_VARIANT_BASELINE
+
+
+def resolve_checkpoint_variant(
+    metadata_variant: Optional[str],
+    state_dict: Dict[str, torch.Tensor],
+) -> str:
+    if metadata_variant:
+        return metadata_variant
+    return infer_variant_from_state_dict(state_dict)
+
+
+def build_generator(
+    feature_extractor: FeatureExtractorBase,
+    residual_skips: bool,
+    residual_init: float,
+    output_skip_scale: Optional[float],
+) -> HypercolumnGenerator:
+    if residual_skips:
+        return ResidualHypercolumnGenerator(
+            feature_extractor,
+            residual_init=residual_init,
+            output_skip_init=output_skip_scale,
+        )
+    if output_skip_scale is not None:
+        warnings.warn(
+            "--output_skip_scale is only used when --residual_skips is enabled; ignoring the value.",
+            RuntimeWarning,
+        ) 
+    return HypercolumnGenerator(feature_extractor)
+
+
+def state_dict_has_output_skip(state_dict: Dict[str, torch.Tensor]) -> bool:
+    return any(key.startswith("output_skip_scale") for key in state_dict.keys())
+
+
+def _validate_checkpoint_backbone(meta: Optional[str], backbone: str) -> None:
+    if meta is None:
+        return
+    meta_norm = meta.lower()
+    backbone_norm = backbone.lower()
+    if meta_norm != backbone_norm:
+        raise ValueError(
+            f"Checkpoint backbone ({meta_norm}) does not match requested backbone ({backbone_norm})."
+        )
+
+
+def extract_state_dict_and_variant(
+    state: Dict[str, Any],
+    backbone: str,
+) -> Tuple[Dict[str, torch.Tensor], str]:
+    if "state_dict" in state and isinstance(state["state_dict"], dict):
+        _validate_checkpoint_backbone(state.get("backbone"), backbone)
+        state_dict = state["state_dict"]
+        variant = resolve_checkpoint_variant(state.get("generator_variant"), state_dict)
+        return state_dict, variant
+    if "generator" in state and isinstance(state["generator"], dict):
+        _validate_checkpoint_backbone(state.get("backbone"), backbone)
+        state_dict = state["generator"]
+        variant = resolve_checkpoint_variant(state.get("generator_variant"), state_dict)
+        return state_dict, variant
+    state_dict = state
+    variant = infer_variant_from_state_dict(state_dict)
+    return state_dict, variant
+
+
+def load_generator_state_dict_from_artifact(
+    artifact_path: Path,
+    device: torch.device,
+    backbone: str,
+) -> Tuple[Dict[str, torch.Tensor], str]:
+    path = artifact_path
+    if path.is_dir():
+        generator_file = path / "generator.pt"
+        if generator_file.exists():
+            state = torch.load(generator_file, map_location=device)
+            if not isinstance(state, dict):
+                raise ValueError(f"Unsupported generator checkpoint format in {generator_file}.")
+            return extract_state_dict_and_variant(state, backbone)
+        checkpoint_file = path / "checkpoint_latest.pt"
+        if checkpoint_file.exists():
+            state = torch.load(checkpoint_file, map_location=device)
+            if not isinstance(state, dict):
+                raise ValueError(f"Unsupported checkpoint format in {checkpoint_file}.")
+            return extract_state_dict_and_variant(state, backbone)
+        raise FileNotFoundError(
+            f"No generator checkpoint found under {path}. Expected 'generator.pt' or 'checkpoint_latest.pt'."
+        )
+    if not path.exists():
+        raise FileNotFoundError(f"Checkpoint not found at {path}")
+    state = torch.load(path, map_location=device)
+    if not isinstance(state, dict):
+        raise ValueError(f"Unsupported generator checkpoint format in {path}.")
+    return extract_state_dict_and_variant(state, backbone)
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +167,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distill_teacher_checkpoint", default="", help="path to a teacher generator checkpoint (.pt or checkpoint directory)")
     parser.add_argument("--distill_feature_weight", type=float, default=0.05, help="weight for feature-map distillation loss (MSE)")
     parser.add_argument("--distill_pixel_weight", type=float, default=0.02, help="weight for teacher output distillation loss (L1)")
+    parser.add_argument("--residual_skips", action="store_true", help="enable residual skip connections after the hypercolumn stem")
+    parser.add_argument("--residual_init", type=float, default=0.1, help="initial residual scale when --residual_skips is enabled")
+    parser.add_argument("--output_skip_scale", type=float, default=None, help="initial transmission skip scale; requires --residual_skips")
     return parser.parse_args()
 
 
@@ -331,6 +449,7 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
                     discriminator: PatchDiscriminator, optimizer_g, optimizer_d,
                     backbone: str, feature_projector: Optional[nn.Module] = None) -> None:
     exp_dir.mkdir(parents=True, exist_ok=True)
+    variant = generator_variant_from_module(generator)
     state = {
         "epoch": epoch,
         "generator": generator.state_dict(),
@@ -338,6 +457,7 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
         "optimizer_g": optimizer_g.state_dict(),
         "optimizer_d": optimizer_d.state_dict(),
         "backbone": backbone,
+        "generator_variant": variant,
     }
     if feature_projector is not None:
         state["feature_projector"] = feature_projector.state_dict()
@@ -345,6 +465,7 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
     torch.save({
         "state_dict": generator.state_dict(),
         "backbone": backbone,
+        "generator_variant": variant,
     }, exp_dir / "generator.pt")
 
 
@@ -413,6 +534,7 @@ def resume_from_checkpoint(
     discriminator: PatchDiscriminator,
     optimizer_g, optimizer_d,
     backbone: str,
+    expected_variant: str,
     feature_projector: Optional[nn.Module] = None
 ) -> int:
     ckpt_path = exp_dir / "checkpoint_latest.pt"
@@ -424,7 +546,13 @@ def resume_from_checkpoint(
         raise ValueError(
             f"Checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
         )
-    generator.load_state_dict(checkpoint["generator"])
+    generator_state = checkpoint["generator"]
+    ckpt_variant = resolve_checkpoint_variant(checkpoint.get("generator_variant"), generator_state)
+    if ckpt_variant != expected_variant:
+        raise ValueError(
+            f"Checkpoint generator variant ({ckpt_variant}) does not match requested variant ({expected_variant})."
+        )
+    generator.load_state_dict(generator_state)
     discriminator.load_state_dict(checkpoint["discriminator"])
     optimizer_g.load_state_dict(checkpoint["optimizer_g"])
     optimizer_d.load_state_dict(checkpoint["optimizer_d"])
@@ -433,33 +561,19 @@ def resume_from_checkpoint(
     return int(checkpoint.get("epoch", 0)) + 1
 
 
-def load_generator_for_inference(generator: HypercolumnGenerator, exp_dir: Path, device: torch.device, backbone: str) -> None:
-    generator_path = exp_dir / "generator.pt"
-    if generator_path.exists():
-        state = torch.load(generator_path, map_location=device)
-        if isinstance(state, dict) and "state_dict" in state:
-            ckpt_backbone = state.get("backbone", "vgg19")
-            if ckpt_backbone != backbone:
-                raise ValueError(
-                    f"Generator checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
-                )
-            generator.load_state_dict(state["state_dict"])
-        else:
-            generator.load_state_dict(state)
-        return
-
-    ckpt_path = exp_dir / "checkpoint_latest.pt"
-    if ckpt_path.exists():
-        checkpoint = torch.load(ckpt_path, map_location=device)
-        ckpt_backbone = checkpoint.get("backbone", "vgg19")
-        if ckpt_backbone != backbone:
-            raise ValueError(
-                f"Checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
-            )
-        generator.load_state_dict(checkpoint["generator"])
-        return
-
-    raise FileNotFoundError(f"No generator checkpoint found in {exp_dir}")
+def load_generator_for_inference(
+    generator: HypercolumnGenerator,
+    exp_dir: Path,
+    device: torch.device,
+    backbone: str,
+    expected_variant: Optional[str] = None,
+) -> None:
+    state_dict, variant = load_generator_state_dict_from_artifact(exp_dir, device, backbone)
+    if expected_variant and variant != expected_variant:
+        raise ValueError(
+            f"Generator checkpoint variant ({variant}) does not match requested variant ({expected_variant})."
+        )
+    generator.load_state_dict(state_dict)
 
 
 def load_generator_weights_from_path(
@@ -467,31 +581,14 @@ def load_generator_weights_from_path(
     checkpoint_path: Path,
     device: torch.device,
     backbone: str,
+    expected_variant: Optional[str] = None,
 ) -> None:
-    if checkpoint_path.is_dir():
-        load_generator_for_inference(generator, checkpoint_path, device, backbone)
-        return
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Teacher checkpoint not found at {checkpoint_path}")
-    state = torch.load(checkpoint_path, map_location=device)
-    if isinstance(state, dict):
-        if "state_dict" in state:
-            ckpt_backbone = state.get("backbone", backbone)
-            if ckpt_backbone != backbone:
-                raise ValueError(
-                    f"Teacher checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
-                )
-            generator.load_state_dict(state["state_dict"])
-            return
-        if "generator" in state:
-            ckpt_backbone = state.get("backbone", backbone)
-            if ckpt_backbone != backbone:
-                raise ValueError(
-                    f"Teacher checkpoint backbone ({ckpt_backbone}) does not match requested backbone ({backbone})."
-                )
-            generator.load_state_dict(state["generator"])
-            return
-    generator.load_state_dict(state)
+    state_dict, variant = load_generator_state_dict_from_artifact(checkpoint_path, device, backbone)
+    if expected_variant and variant != expected_variant:
+        raise ValueError(
+            f"Teacher checkpoint generator variant ({variant}) does not match requested variant ({expected_variant})."
+        )
+    generator.load_state_dict(state_dict)
 
 
 
@@ -526,12 +623,22 @@ def train(args: argparse.Namespace) -> None:
 
     try:
         feature_extractor = create_feature_extractor(args.backbone, use_hyper, ckpt_root)
-        generator = HypercolumnGenerator(feature_extractor).to(device)
+        generator = build_generator(
+            feature_extractor,
+            residual_skips=args.residual_skips,
+            residual_init=args.residual_init,
+            output_skip_scale=args.output_skip_scale,
+        ).to(device)
         discriminator = PatchDiscriminator().to(device)
         feature_extractor = generator.feature_extractor
         feature_extractor.eval()
         log(f"[i] Experiment directory: {exp_dir}")
         log(f"[i] Using backbone: {args.backbone}")
+        variant_name = generator_variant_from_module(generator)
+        log(f"[i] Generator variant: {variant_name}")
+        output_skip_param = getattr(generator, "output_skip_scale", None)
+        if output_skip_param is not None:
+            log(f"[i] Initial output skip scale: {float(output_skip_param.item()):.4f}")
 
         use_distillation = (feature_distill_weight > 0.0 or pixel_distill_weight > 0.0)
         if use_distillation and (not args.distill_teacher_backbone or not args.distill_teacher_checkpoint):
@@ -543,15 +650,28 @@ def train(args: argparse.Namespace) -> None:
             teacher_feature_extractor = create_feature_extractor(
                 args.distill_teacher_backbone, use_hyper, ckpt_root
             )
-            teacher_generator = HypercolumnGenerator(teacher_feature_extractor).to(device)
             teacher_ckpt_path = resolve_path(args.distill_teacher_checkpoint)
-            load_generator_weights_from_path(
-                teacher_generator, teacher_ckpt_path, device, args.distill_teacher_backbone
+            teacher_state_dict, teacher_variant = load_generator_state_dict_from_artifact(
+                teacher_ckpt_path,
+                device,
+                args.distill_teacher_backbone,
             )
+            teacher_residual = teacher_variant == GENERATOR_VARIANT_RESIDUAL
+            teacher_has_output_skip = state_dict_has_output_skip(teacher_state_dict)
+            teacher_generator = build_generator(
+                teacher_feature_extractor,
+                residual_skips=teacher_residual,
+                residual_init=0.0,
+                output_skip_scale=0.0 if teacher_residual and teacher_has_output_skip else None,
+            ).to(device)
+            teacher_generator.load_state_dict(teacher_state_dict)
             teacher_generator.eval()
             for param in teacher_generator.parameters():
                 param.requires_grad = False
-            log(f"[i] Loaded teacher generator ({args.distill_teacher_backbone}) from {teacher_ckpt_path}")
+            log(
+                f"[i] Loaded teacher generator ({args.distill_teacher_backbone}, variant={teacher_variant}) "
+                f"from {teacher_ckpt_path}"
+            )
             if feature_distill_weight > 0.0:
                 teacher_dims = teacher_generator.feature_extractor.layer_dims
                 student_dims = generator.feature_extractor.layer_dims
@@ -603,6 +723,7 @@ def train(args: argparse.Namespace) -> None:
                 exp_dir, device, generator,
                 discriminator, optimizer_g,
                 optimizer_d, args.backbone,
+                variant_name,
                 feature_projector
             )
             log(f"[i] Resuming training from epoch {start_epoch}")
@@ -879,6 +1000,7 @@ def train(args: argparse.Namespace) -> None:
                     "optimizer_g": optimizer_g.state_dict(),
                     "optimizer_d": optimizer_d.state_dict(),
                     "backbone": args.backbone,
+                    "generator_variant": variant_name,
                     **({"feature_projector": feature_projector.state_dict()} if feature_projector is not None else {}),
                 }, epoch_dir / "checkpoint.pt")
                 if vis_snapshots:
@@ -907,16 +1029,22 @@ def inference(args: argparse.Namespace) -> None:
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     ckpt_root = resolve_path(args.ckpt_dir)
     feature_extractor = create_feature_extractor(args.backbone, True, ckpt_root)
-    generator = HypercolumnGenerator(feature_extractor).to(device)
+    generator = build_generator(
+        feature_extractor,
+        residual_skips=args.residual_skips,
+        residual_init=args.residual_init,
+        output_skip_scale=args.output_skip_scale,
+    ).to(device)
     generator.eval()
     generator.feature_extractor.eval()
+    variant_name = generator_variant_from_module(generator)
 
     use_amp = bool(args.use_amp and device.type == "cuda")
     if args.use_amp and not use_amp:
         print("[w] AMP requested but CUDA device not available; running in full precision.")
 
     exp_dir = get_experiment_dir(args.exp_name)
-    load_generator_for_inference(generator, exp_dir, device, args.backbone)
+    load_generator_for_inference(generator, exp_dir, device, args.backbone, expected_variant=variant_name)
 
     test_roots = collect_roots(args.test_dir)
     images = prepare_test_images(test_roots)

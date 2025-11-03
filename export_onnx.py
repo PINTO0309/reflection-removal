@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-import argparse
-from pathlib import Path
 import contextlib
 import os
 import re
 import tempfile
+import argparse
+from pathlib import Path
 from typing import Any, Dict, List
 
 import torch
@@ -19,6 +19,7 @@ from models import (
     DINOFeatureExtractor,
     HGNetFeatureExtractor,
     HypercolumnGenerator,
+    ResidualHypercolumnGenerator,
     VGGFeatureExtractor,
 )
 
@@ -77,6 +78,58 @@ def _normalise_backbone(name: str) -> str:
     if candidate not in BACKBONE_CHOICES:
         raise ValueError(f"Unsupported backbone '{name}'. Expected one of {BACKBONE_CHOICES}.")
     return candidate
+
+
+GENERATOR_VARIANT_BASELINE = "baseline"
+GENERATOR_VARIANT_RESIDUAL = "residual_skips"
+
+
+def infer_generator_variant(state_dict: Dict[str, Any]) -> str:
+    for key in state_dict.keys():
+        if key.startswith("residual_scales"):
+            return GENERATOR_VARIANT_RESIDUAL
+    return GENERATOR_VARIANT_BASELINE
+
+
+def extract_generator_state(
+    state: Any,
+    backbone: str,
+) -> tuple[Dict[str, torch.Tensor], str]:
+    if isinstance(state, dict):
+        if "state_dict" in state and isinstance(state["state_dict"], dict):
+            ckpt_backbone = state.get("backbone")
+            if isinstance(ckpt_backbone, str):
+                ckpt_norm = _normalise_backbone(ckpt_backbone)
+                if ckpt_norm != backbone:
+                    raise ValueError(
+                        f"Checkpoint backbone '{ckpt_norm}' does not match requested backbone '{backbone}'."
+                    )
+            state_dict = state["state_dict"]
+            variant = state.get("generator_variant")
+            if isinstance(variant, str):
+                return state_dict, variant
+            return state_dict, infer_generator_variant(state_dict)
+        if "generator" in state and isinstance(state["generator"], dict):
+            ckpt_backbone = state.get("backbone")
+            if isinstance(ckpt_backbone, str):
+                ckpt_norm = _normalise_backbone(ckpt_backbone)
+                if ckpt_norm != backbone:
+                    raise ValueError(
+                        f"Checkpoint backbone '{ckpt_norm}' does not match requested backbone '{backbone}'."
+                    )
+            state_dict = state["generator"]
+            variant = state.get("generator_variant")
+            if isinstance(variant, str):
+                return state_dict, variant
+            return state_dict, infer_generator_variant(state_dict)
+        state_dict = state
+        variant = infer_generator_variant(state_dict)
+        return state_dict, variant
+    raise ValueError("Unsupported checkpoint format for generator weights.")
+
+
+def state_dict_has_output_skip(state_dict: Dict[str, torch.Tensor]) -> bool:
+    return any(key.startswith("output_skip_scale") for key in state_dict.keys())
 
 
 def resolve_backbone(state: Any, override: str | None) -> str:
@@ -194,17 +247,11 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
         else:
             hyper_input = image_prepared
 
-        net = self.generator.conv0(hyper_input)
-        net = self.generator.conv1(net)
-        net = self.generator.conv2(net)
-        net = self.generator.conv3(net)
-        net = self.generator.conv4(net)
-        net = self.generator.conv5(net)
-        net = self.generator.conv6(net)
-        net = self.generator.conv7(net)
-        net = self.generator.conv9(net)
-        outputs = self.generator.conv_last(net)
+        outputs = self.generator.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
+        skip_scale = getattr(self.generator, "output_skip_scale", None)
+        if skip_scale is not None:
+            transmission = image_prepared + skip_scale * transmission
         return transmission, reflection
 
 
@@ -244,39 +291,12 @@ class FullGeneratorExportWrapper(torch.nn.Module):
         else:
             hyper_input = image_resized
 
-        net = self.generator.conv0(hyper_input)
-        net = self.generator.conv1(net)
-        net = self.generator.conv2(net)
-        net = self.generator.conv3(net)
-        net = self.generator.conv4(net)
-        net = self.generator.conv5(net)
-        net = self.generator.conv6(net)
-        net = self.generator.conv7(net)
-        net = self.generator.conv9(net)
-        outputs = self.generator.conv_last(net)
+        outputs = self.generator.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
+        skip_scale = getattr(self.generator, "output_skip_scale", None)
+        if skip_scale is not None:
+            transmission = image_resized + skip_scale * transmission
         return transmission, reflection
-
-
-def load_generator_state(generator: HypercolumnGenerator, state: Any, backbone: str) -> None:
-    if isinstance(state, dict):
-        if "state_dict" in state and isinstance(state["state_dict"], dict):
-            ckpt_backbone = state.get("backbone")
-            if isinstance(ckpt_backbone, str):
-                ckpt_norm = _normalise_backbone(ckpt_backbone)
-                if ckpt_norm != backbone:
-                    raise ValueError(f"Checkpoint backbone '{ckpt_norm}' does not match requested backbone '{backbone}'.")
-            generator.load_state_dict(state["state_dict"])
-            return
-        if "generator" in state and isinstance(state["generator"], dict):
-            ckpt_backbone = state.get("backbone")
-            if isinstance(ckpt_backbone, str):
-                ckpt_norm = _normalise_backbone(ckpt_backbone)
-                if ckpt_norm != backbone:
-                    raise ValueError(f"Checkpoint backbone '{ckpt_norm}' does not match requested backbone '{backbone}'.")
-            generator.load_state_dict(state["generator"])
-            return
-    generator.load_state_dict(state)
 
 
 def build_dummy_input(
@@ -632,11 +652,29 @@ def export_onnx(args: argparse.Namespace) -> None:
     ckpt_dir: Path = args.ckpt_dir
     static_shape: bool = args.static_shape
 
+    state_dict, variant = extract_generator_state(state, backbone)
+    has_residual = variant == GENERATOR_VARIANT_RESIDUAL
+    has_output_skip = state_dict_has_output_skip(state_dict)
+
     feature_extractor = create_feature_extractor(backbone, use_hyper, ckpt_dir)
     feature_extractor.eval()
-    generator = HypercolumnGenerator(feature_extractor).to(device)
+    if has_residual:
+        output_skip_init = 0.0 if has_output_skip else None
+        generator = ResidualHypercolumnGenerator(
+            feature_extractor,
+            residual_init=0.0,
+            output_skip_init=output_skip_init,
+        ).to(device)
+    else:
+        generator = HypercolumnGenerator(feature_extractor).to(device)
     generator.eval()
-    load_generator_state(generator, state, backbone)
+    try:
+        generator.load_state_dict(state_dict, strict=True)
+    except RuntimeError as error:
+        raise RuntimeError(
+            "Failed to load generator weights from checkpoint. "
+            "Ensure the checkpoint matches the expected architecture."
+        ) from error
     param_dtype = next(generator.parameters()).dtype
     head_height = getattr(args, "head_height", None)
     head_width = getattr(args, "head_width", None)
