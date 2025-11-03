@@ -55,6 +55,7 @@ reflection-dataset/
 `backbone: "vgg19", "hgnetv2", "dinov3_vitt", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"`
 
 ```bash
+# Baseline
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
@@ -63,6 +64,7 @@ uv run python main.py \
 --use_amp
 ```
 ```bash
+# Initialized with DINOv3 default weights + Residual blocks
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
@@ -73,6 +75,7 @@ uv run python main.py \
 --use_amp
 ```
 ```bash
+# Initialized with pretrained weights + Residual blocks
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
@@ -97,6 +100,7 @@ uv run python main.py \
 --use_amp \
 --resume
 ```
+
 |Value|Note|
 |:-|:-|
 |loss|The average `content loss` calculated by adding the `L1 coefficient + 0.2×perceptual + grad`. When actually updating the generator, this is multiplied by 100 and added to the next adv.|
@@ -111,6 +115,19 @@ Therefore, the loss display is not the final total loss, but an indicator for ch
 Distillation from dinov3_vits16 to dinov3_vitt and fine-tuned backbone in DEIMv2 for students to learn.
 
 ```bash
+# Without residual blocks
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vitt \
+--exp_name dinov3_vitt_distill \
+--ckpt_dir ckpts \
+--distill_teacher_backbone dinov3_vits16 \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16.pt \
+--use_amp
+```
+```bash
+# With residual blocks
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
@@ -120,7 +137,7 @@ uv run python main.py \
 --residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
---distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16.pt \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_residual.pt \
 --use_amp
 ```
 
