@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models import VGG19_Weights, vgg19
 
+from backbones import Dinov3Tiny, HGNetV2
 
 def identity_init(conv: nn.Conv2d) -> None:
     """Initialise conv kernels as (approximate) identity."""
@@ -260,6 +261,7 @@ class DINOFeatureExtractor(FeatureExtractorBase):
     """DINOv3 ViT-based feature extractor with torch.hub support."""
 
     CKPT_FILENAMES = {
+        "dinov3_vitt": "deimv2_dinov3_s_wholebody34.pth",
         "dinov3_vits16": "dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
         "dinov3_vits16plus": "dinov3_vits16plus_pretrain_lvd1689m-4057cbaa.pth",
         "dinov3_vitb16": "dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth",
@@ -323,6 +325,30 @@ class DINOFeatureExtractor(FeatureExtractorBase):
         return str(path) if path.is_file() else None
 
     def _load_model(self) -> nn.Module:
+        if self.arch == "dinov3_vitt":
+            model = Dinov3Tiny()
+            if self.weights_path:
+                state = torch.load(self.weights_path, map_location="cpu")
+                if isinstance(state, dict) and "model" in state:
+                    state = state["model"]
+                filtered = {
+                    key.replace("backbone.dinov3.", "", 1): value
+                    for key, value in state.items()
+                    if key.startswith("backbone.dinov3.")
+                }
+                missing, unexpected = model.load_state_dict(filtered, strict=False)
+                if missing:
+                    warnings.warn(
+                        f"DINOv3 ViT-Tiny missing keys during load: {sorted(missing)}",
+                        RuntimeWarning,
+                    )
+                if unexpected:
+                    warnings.warn(
+                        f"DINOv3 ViT-Tiny unexpected keys during load: {sorted(unexpected)}",
+                        RuntimeWarning,
+                    )
+            return model
+
         repo = os.environ.get("DINOV3_HUB_REPO", self.DEFAULT_REPO)
         pinned_ref = os.environ.get("DINOV3_HUB_REF", self.DEFAULT_REF)
         fallback_ref = os.environ.get("DINOV3_HUB_FALLBACK_REF", "main")
@@ -481,3 +507,80 @@ class DINOFeatureExtractor(FeatureExtractorBase):
         if padded_h != target_h or padded_w != target_w:
             feat_map = feat_map[:, :, :target_h, :target_w]
         return feat_map
+
+
+class HGNetFeatureExtractor(FeatureExtractorBase):
+    """HGNetV2 CNN-based feature extractor for DEIMv2 checkpoints."""
+
+    CKPT_FILENAME = "deimv2_hgnetv2_n_wholebody34.pth"
+    STAGE_NAMES = ["stage1", "stage2", "stage3", "stage4"]
+
+    def __init__(self, use_hyper: bool = True, ckpt_root: Optional[Path] = None):
+        super().__init__(use_hyper=use_hyper)
+        self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else None
+        self.model = HGNetV2(name="B0", use_lab=True, return_indices=tuple(range(len(self.STAGE_NAMES))))
+        self.model.eval()
+        for param in self.model.parameters():
+            param.requires_grad = False
+
+        self._load_weights()
+
+        self._stage_channels = self.model.out_channels
+        self._hyper_layers = self.STAGE_NAMES[: len(self._stage_channels)]
+        self._layer_dims = {name: channels for name, channels in zip(self._hyper_layers, self._stage_channels)}
+        if self._hyper_layers:
+            self._layer_dims["final"] = self._layer_dims[self._hyper_layers[-1]]
+        self._layer_dims["input"] = 3
+
+        self._perceptual_layers = [("input", 1.0)] + [(name, 1.0) for name in self._hyper_layers]
+        if "final" in self._layer_dims:
+            self._perceptual_layers.append(("final", 1.0))
+
+    def _load_weights(self) -> None:
+        if self.ckpt_root is None:
+            return
+        path = self.ckpt_root / self.CKPT_FILENAME
+        if not path.is_file():
+            return
+        state = torch.load(path, map_location="cpu")
+        if isinstance(state, dict) and "model" in state:
+            state = state["model"]
+        filtered = {
+            key.replace("backbone.", "", 1): value
+            for key, value in state.items()
+            if key.startswith("backbone.")
+        }
+        missing, unexpected = self.model.load_state_dict(filtered, strict=False)
+        if missing:
+            warnings.warn(f"HGNetV2 missing keys during load: {sorted(missing)}", RuntimeWarning)
+        if unexpected:
+            warnings.warn(f"HGNetV2 unexpected keys during load: {sorted(unexpected)}", RuntimeWarning)
+
+    @property
+    def hyper_layers(self) -> List[str]:
+        return self._hyper_layers
+
+    @property
+    def perceptual_layers(self) -> List[Tuple[str, float]]:
+        return self._perceptual_layers
+
+    @property
+    def hypercolumn_channels(self) -> int:
+        return sum(self._layer_dims[layer] for layer in self._hyper_layers)
+
+    @property
+    def layer_dims(self) -> Dict[str, int]:
+        return dict(self._layer_dims)
+
+    def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
+        x_input = x if require_grad else x.detach()
+        forward_ctx = torch.enable_grad() if require_grad else torch.no_grad()
+        with forward_ctx:
+            outputs = self.model(x_input)
+
+        features: Dict[str, torch.Tensor] = {"input": x_input}
+        for name, tensor in zip(self._hyper_layers, outputs):
+            features[name] = tensor
+        if self._hyper_layers:
+            features["final"] = features[self._hyper_layers[-1]]
+        return features

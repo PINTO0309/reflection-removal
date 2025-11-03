@@ -18,12 +18,13 @@ from discriminator import PatchDiscriminator
 from losses import (compute_exclusion_loss, compute_l1_loss,
                     compute_perceptual_loss)
 from models import (DINOFeatureExtractor, FeatureExtractorBase,
-                    FeatureProjector, HypercolumnGenerator, VGGFeatureExtractor)
+                    FeatureProjector, HypercolumnGenerator, VGGFeatureExtractor,
+                    HGNetFeatureExtractor)
 
 
 IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.ppm', '.bmp'}
 GAUSSIAN_MASK = None
-BACKBONE_CHOICES = ["vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"]
+BACKBONE_CHOICES = ["vgg19", "hgnetv2", "dinov3_vitt", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"]
 VISUAL_SNAPSHOTS_PER_EPOCH = 0
 GRAD_CLIP_NORM = 5.0
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -79,6 +80,8 @@ def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path) -> 
     name = backbone.lower()
     if name == "vgg19":
         return VGGFeatureExtractor(use_hyper=use_hyper)
+    if name == "hgnetv2":
+        return HGNetFeatureExtractor(use_hyper=use_hyper, ckpt_root=ckpt_dir)
     if name in DINOFeatureExtractor.CKPT_FILENAMES:
         return DINOFeatureExtractor(name, use_hyper=use_hyper, ckpt_root=ckpt_dir)
     raise ValueError(f"Unsupported backbone: {backbone}")

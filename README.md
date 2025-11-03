@@ -12,7 +12,10 @@ source .venv/bin/activate
 ```
 
 * All pretrained weights (VGG-19) are fetched automatically via `torchvision`, so no manual download is required.
-* To use the DINOv3 backbones (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`), place the provided checkpoints inside `./ckps/` (files named `dinov3_*_pretrain_lvd1689m-*.pth`). If the files are missing, they will be downloaded automatically through `torch.hub`.
+* Additional backbones are supported:
+  * **DINOv3 ViT-Tiny (`dinov3_vitt`)** — DEIMv2-finetuned weights stored at `ckpts/deimv2_dinov3_s_wholebody34.pth`. No `torch.hub` download is available, so keep this file locally.
+  * **HGNetV2 (`hgnetv2`)** — DEIMv2-finetuned CNN backbone stored at `ckpts/deimv2_hgnetv2_n_wholebody34.pth`.
+  * **DINOv3 standard variants** (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`) — place the provided checkpoints inside `./ckpts/` (files named `dinov3_*_pretrain_lvd1689m-*.pth`). If the files are missing, they will be downloaded automatically through `torch.hub`.
 
 ## Dataset
 https://github.com/ceciliavision/perceptual-reflection-removal?tab=readme-ov-file#dataset
@@ -49,7 +52,7 @@ reflection-dataset/
 
 ## Training
 
-`backbone: "vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"`
+`backbone: "vgg19", "hgnetv2", "dinov3_vitt", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"`
 
 ```bash
 uv run python main.py \
@@ -79,6 +82,20 @@ uv run python main.py \
 |adv|The average adversarial loss (BCE), which is used to make the classifier believe the image is "real."|
 
 Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
+
+Distillation from dinov3_vits16 to dinov3_vitt and fine-tuned backbone in DEIMv2 for students to learn.
+
+```bash
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--exp_name dinov3_vitt \
+--backbone dinov3_vitt \
+--ckpt_dir ckpts \
+--distill_teacher_backbone dinov3_vits16 \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16.pt \
+--use_amp
+```
 
 ## Interpreting the Loss Components
 
@@ -116,7 +133,7 @@ tensorboard --logdir runs
 
 `--keep_checkpoint_history`: number of saved checkpoint epochs (`epoch_<NNNN>` folders under `runs/<exp_name>/`) to retain (0 keeps all)
 
-`--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
+`--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `hgnetv2`, `dinov3_vitt`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
 
 `--ckpt_dir`: directory where backbone checkpoints are searched (default `ckpts`)
 
@@ -145,6 +162,10 @@ Make sure the `--backbone` flag matches the model that produced the checkpoint y
 If `--test_only` is omitted, the script trains by default and writes checkpoints/metrics to `runs/<exp_name>/`.
 
 Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
+
+## DEIMv2-S backbone output
+
+`/model/backbone/Reshape_1_output_0: [1, 192, 40, 40]` or `/model/backbone/Resize_1`
 
 ## Citation
 
