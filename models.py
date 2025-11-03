@@ -130,12 +130,7 @@ class HypercolumnGenerator(nn.Module):
                                 nonlinearity="leaky_relu")
         nn.init.zeros_(self.conv_last.bias)
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        return_features: bool = False,
-    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
-        hyper_input, features = self.feature_extractor.build_hypercolumns_with_features(x, require_grad=True)
+    def forward_head(self, hyper_input: torch.Tensor) -> torch.Tensor:
         net = self.conv0(hyper_input)
         net = self.conv1(net)
         net = self.conv2(net)
@@ -145,8 +140,75 @@ class HypercolumnGenerator(nn.Module):
         net = self.conv6(net)
         net = self.conv7(net)
         net = self.conv9(net)
-        outputs = self.conv_last(net)
+        return self.conv_last(net)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_features: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        hyper_input, features = self.feature_extractor.build_hypercolumns_with_features(x, require_grad=True)
+        outputs = self.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
+        if return_features:
+            return transmission, reflection, features
+        return transmission, reflection
+
+
+class ResidualHypercolumnGenerator(HypercolumnGenerator):
+    """Prototype generator with residual skip connections after the hypercolumn stem."""
+
+    def __init__(
+        self,
+        feature_extractor: FeatureExtractorBase,
+        base_channels: int = 64,
+        residual_init: float = 0.1,
+        output_skip_init: Optional[float] = None,
+    ):
+        super().__init__(feature_extractor, base_channels=base_channels)
+        scale_value = torch.tensor(residual_init, dtype=self.conv0.conv.weight.dtype)
+        residual_params = [
+            nn.Parameter(scale_value.clone())
+            for _ in range(8)
+        ]
+        self.residual_scales = nn.ParameterList(residual_params)
+        if output_skip_init is not None:
+            self.output_skip_scale = nn.Parameter(
+                torch.tensor(output_skip_init, dtype=self.conv0.conv.weight.dtype)
+            )
+        else:
+            self.register_parameter("output_skip_scale", None)
+
+    def forward_head(self, hyper_input: torch.Tensor) -> torch.Tensor:
+        net = self.conv0(hyper_input)
+        residual_blocks = (
+            self.conv1,
+            self.conv2,
+            self.conv3,
+            self.conv4,
+            self.conv5,
+            self.conv6,
+            self.conv7,
+            self.conv9,
+        )
+        for conv, scale in zip(residual_blocks, self.residual_scales):
+            residual = net
+            update = conv(residual)
+            net = residual + scale * update
+        return self.conv_last(net)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_features: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        hyper_input, features = self.feature_extractor.build_hypercolumns_with_features(x, require_grad=True)
+        outputs = self.forward_head(hyper_input)
+        transmission_delta, reflection = torch.chunk(outputs, 2, dim=1)
+        if self.output_skip_scale is not None:
+            transmission = x + self.output_skip_scale * transmission_delta
+        else:
+            transmission = transmission_delta
         if return_features:
             return transmission, reflection, features
         return transmission, reflection

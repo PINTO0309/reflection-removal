@@ -59,8 +59,30 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
---use_amp \
---exp_name dinov3_vits16
+--exp_name dinov3_vits16 \
+--use_amp
+```
+```bash
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vits16 \
+--exp_name dinov3_vits16_residual \
+--residual_skips \
+--residual_init 0.1 \
+--output_skip_scale 1.0 \
+--use_amp
+```
+```bash
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vits16 \
+--exp_name dinov3_vits16_residual \
+--ckpt_file ckpts/reflection_removal_dinov3_vits16.pt
+--residual_skips \
+--residual_init 0.1 \
+--use_amp
 ```
 
 To resume from a previous checkpoint inside `dinov3_vits16/`:
@@ -91,9 +113,11 @@ Distillation from dinov3_vits16 to dinov3_vitt and fine-tuned backbone in DEIMv2
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
---exp_name dinov3_vitt_distill \
 --backbone dinov3_vitt \
+--exp_name dinov3_vitt_distill \
 --ckpt_dir ckpts \
+--residual_skips \
+--residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
 --distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16.pt \
 --use_amp
@@ -138,6 +162,7 @@ tensorboard --logdir runs
 `--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `hgnetv2`, `dinov3_vitt`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
 
 `--ckpt_dir`: directory where backbone checkpoints are searched (default `ckpts`)
+`--ckpt_file`: optional generator checkpoint that seeds training; loads weights before the first epoch (ignored with `--resume`)
 
 `--test_only`: skip training and run inference only
 
