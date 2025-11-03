@@ -172,26 +172,26 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
 ## ONNX Export
 
 - Backbone + Head
- ```bash
- uv run python export_onnx.py \
- --checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
- --output dinov3_vitt_gennerator.onnx \
- --backbone dinov3_vitt \
- --static_shape \
- --height 640 \
- --width 640
- ```
+  ```bash
+  uv run python export_onnx.py \
+  --checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
+  --output dinov3_vitt_gennerator.onnx \
+  --backbone dinov3_vitt \
+  --static_shape \
+  --height 640 \
+  --width 640
+  ```
 - Head only
- ```bash
- uv run python export_onnx.py \
- --checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
- --output dinov3_vitt_gennerator.onnx \
- --backbone dinov3_vitt \
- --static_shape \
- --height 640 \
- --width 640 \
- --head_only
- ```
+  ```bash
+  uv run python export_onnx.py \
+  --checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
+  --output dinov3_vitt_gennerator.onnx \
+  --backbone dinov3_vitt \
+  --static_shape \
+  --height 640 \
+  --width 640 \
+  --head_only
+  ```
 
 ## Citation
 
