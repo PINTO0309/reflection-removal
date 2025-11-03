@@ -73,6 +73,18 @@ uv run python main.py \
 --output_skip_scale 1.0 \
 --use_amp
 ```
+```bash
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vits16 \
+--exp_name dinov3_vits16_residual \
+--ckpt_file ckpts/reflection_removal_dinov3_vits16.pt
+--residual_skips \
+--residual_init 0.1 \
+--output_skip_scale 1.0 \
+--use_amp
+```
 
 To resume from a previous checkpoint inside `dinov3_vits16/`:
 
