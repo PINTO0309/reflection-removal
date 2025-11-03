@@ -183,6 +183,8 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
   --head_height 320 \
   --head_width 320
   ```
+  <img width="800" alt="image" src="https://github.com/user-attachments/assets/5338c4fd-8086-4f5d-be68-3d90c1096c91" />
+
 - Head only
   ```bash
   uv run python export_onnx.py \
@@ -196,6 +198,7 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
   --head_width 320 \
   --head_only
   ```
+  <img width="900" alt="image" src="https://github.com/user-attachments/assets/cff6fa45-ecc0-460b-a65b-182ae1e2bd13" />
 
 ## Citation
 
