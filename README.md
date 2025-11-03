@@ -83,6 +83,20 @@ uv run python main.py \
 
 Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
 
+Distillation from dinov3_vits16 to dinov3_vitt and fine-tuned backbone in DEIMv2 for students to learn.
+
+```bash
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--exp_name dinov3_vitt \
+--backbone dinov3_vitt \
+--ckpt_dir ckpts \
+--distill_teacher_backbone dinov3_vits16 \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16.pt \
+--use_amp
+```
+
 ## Interpreting the Loss Components
 
 - **Content vs. adversarial balance**: For each generator update we optimise

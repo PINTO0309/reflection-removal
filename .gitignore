@@ -5,6 +5,7 @@ test_images/
 test_results/
 DEIMv2/
 *.tar.gz
+*.pt
 *.pth
 *.onnx
 *.engine
