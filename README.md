@@ -12,7 +12,10 @@ source .venv/bin/activate
 ```
 
 * All pretrained weights (VGG-19) are fetched automatically via `torchvision`, so no manual download is required.
-* To use the DINOv3 backbones (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`), place the provided checkpoints inside `./ckps/` (files named `dinov3_*_pretrain_lvd1689m-*.pth`). If the files are missing, they will be downloaded automatically through `torch.hub`.
+* Additional backbones are supported:
+  * **DINOv3 ViT-Tiny (`dinov3_vitt`)** — DEIMv2-finetuned weights stored at `ckpts/deimv2_dinov3_s_wholebody34.pth`. No `torch.hub` download is available, so keep this file locally.
+  * **HGNetV2 (`hgnetv2`)** — DEIMv2-finetuned CNN backbone stored at `ckpts/deimv2_hgnetv2_n_wholebody34.pth`.
+  * **DINOv3 standard variants** (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`) — place the provided checkpoints inside `./ckpts/` (files named `dinov3_*_pretrain_lvd1689m-*.pth`). If the files are missing, they will be downloaded automatically through `torch.hub`.
 
 ## Dataset
 https://github.com/ceciliavision/perceptual-reflection-removal?tab=readme-ov-file#dataset
@@ -49,7 +52,7 @@ reflection-dataset/
 
 ## Training
 
-`backbone: "vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"`
+`backbone: "vgg19", "hgnetv2", "dinov3_vitt", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"`
 
 ```bash
 uv run python main.py \
@@ -116,7 +119,7 @@ tensorboard --logdir runs
 
 `--keep_checkpoint_history`: number of saved checkpoint epochs (`epoch_<NNNN>` folders under `runs/<exp_name>/`) to retain (0 keeps all)
 
-`--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
+`--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `hgnetv2`, `dinov3_vitt`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
 
 `--ckpt_dir`: directory where backbone checkpoints are searched (default `ckpts`)
 

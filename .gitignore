@@ -3,6 +3,7 @@ __pycache__/
 runs/
 test_images/
 test_results/
+DEIMv2/
 *.tar.gz
 *.pth
 *.onnx

@@ -6,9 +6,21 @@ from typing import Any, Dict
 
 import torch
 
-from models import DINOFeatureExtractor, HypercolumnGenerator, VGGFeatureExtractor
+from models import (
+    DINOFeatureExtractor,
+    HGNetFeatureExtractor,
+    HypercolumnGenerator,
+    VGGFeatureExtractor,
+)
 
-BACKBONE_CHOICES = ["vgg19", "dinov3_vits16", "dinov3_vits16plus", "dinov3_vitb16"]
+BACKBONE_CHOICES = [
+    "vgg19",
+    "hgnetv2",
+    "dinov3_vitt",
+    "dinov3_vits16",
+    "dinov3_vits16plus",
+    "dinov3_vitb16",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -54,6 +66,8 @@ def resolve_backbone(state: Any, override: str | None) -> str:
 def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path):
     if backbone == "vgg19":
         return VGGFeatureExtractor(use_hyper=use_hyper)
+    if backbone == "hgnetv2":
+        return HGNetFeatureExtractor(use_hyper=use_hyper, ckpt_root=ckpt_dir)
     if backbone in DINOFeatureExtractor.CKPT_FILENAMES:
         return DINOFeatureExtractor(backbone, use_hyper=use_hyper, ckpt_root=ckpt_dir)
     raise ValueError(f"Unsupported backbone '{backbone}'.")
