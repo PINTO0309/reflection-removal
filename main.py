@@ -162,6 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--test_dir", default="./test_images", help="comma separated list of directories for evaluation")
     parser.add_argument("--backbone", default="dinov3_vits16", choices=BACKBONE_CHOICES, help="feature backbone for hypercolumns and perceptual loss")
     parser.add_argument("--ckpt_dir", default="ckpts", help="directory for optional pretrained backbone weights")
+    parser.add_argument("--ckpt_file", default="", help="path to generator checkpoint used for weight initialization")
     parser.add_argument("--use_amp", action="store_true", help="enable automatic mixed precision during train/test")
     parser.add_argument("--distill_teacher_backbone", default=None, choices=BACKBONE_CHOICES, help="backbone for the frozen teacher generator used in distillation")
     parser.add_argument("--distill_teacher_checkpoint", default="", help="path to a teacher generator checkpoint (.pt or checkpoint directory)")
@@ -639,6 +640,22 @@ def train(args: argparse.Namespace) -> None:
         output_skip_param = getattr(generator, "output_skip_scale", None)
         if output_skip_param is not None:
             log(f"[i] Initial output skip scale: {float(output_skip_param.item()):.4f}")
+        if args.ckpt_file:
+            if args.resume:
+                log("[w] --ckpt_file is ignored because --resume is set; resuming from runs/ checkpoints.")
+            else:
+                pretrained_path = resolve_path(args.ckpt_file)
+                state_dict, ckpt_variant = load_generator_state_dict_from_artifact(
+                    pretrained_path,
+                    device,
+                    args.backbone,
+                )
+                if ckpt_variant != variant_name:
+                    raise ValueError(
+                        f"Pretrained checkpoint generator variant ({ckpt_variant}) does not match requested variant ({variant_name})."
+                    )
+                generator.load_state_dict(state_dict)
+                log(f"[i] Loaded generator weights from {pretrained_path}")
 
         use_distillation = (feature_distill_weight > 0.0 or pixel_distill_weight > 0.0)
         if use_distillation and (not args.distill_teacher_backbone or not args.distill_teacher_checkpoint):

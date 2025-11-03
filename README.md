@@ -149,6 +149,7 @@ tensorboard --logdir runs
 `--backbone`: feature extractor for hypercolumns and perceptual loss (`vgg19`, `hgnetv2`, `dinov3_vitt`, `dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`). Hypercolumn features are always enabled; older runs that used `--is_hyper` now default to the same behaviour.
 
 `--ckpt_dir`: directory where backbone checkpoints are searched (default `ckpts`)
+`--ckpt_file`: optional generator checkpoint that seeds training; loads weights before the first epoch (ignored with `--resume`)
 
 `--test_only`: skip training and run inference only
 
