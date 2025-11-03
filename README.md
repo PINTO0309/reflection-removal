@@ -70,7 +70,6 @@ uv run python main.py \
 --exp_name dinov3_vits16_residual \
 --residual_skips \
 --residual_init 0.1 \
---output_skip_scale 1.0 \
 --use_amp
 ```
 ```bash
