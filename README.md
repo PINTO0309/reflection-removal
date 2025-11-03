@@ -252,11 +252,16 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
 
 If you use this repository in your research, please cite both the original method and this implementation:
 ```bibtex
-@misc{reflection_removal_repo,
-  author = {PINTO0309},
-  title = {reflection-removal},
-  howpublished = {\url{https://github.com/PINTO0309/reflection-removal}},
-  note = {Accessed: 2024-04-13}
+@software{Hyodo_2025_reflection_removal,
+  author    = {Katsuya Hyodo},
+  title     = {reflection-removal: Reflection-Removal},
+  year      = {2025},
+  month     = {nov},
+  publisher = {Zenodo},
+  version   = {1.0.0},
+  doi       = {10.5281/zenodo.17413165},
+  url       = {https://github.com/PINTO0309/reflection-removal},
+  abstract  = {A model for removing reflections using a single image.},
 }
 ```
 
