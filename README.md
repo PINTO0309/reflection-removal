@@ -208,9 +208,14 @@ If `--test_only` is omitted, the script trains by default and writes checkpoints
 
 Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
 
-## DEIMv2-S backbone output
+## VITT (DEIMv2-S) backbone outputs -> generator inputs
 
-`/model/backbone/Reshape_1_output_0: [1, 192, 40, 40]` or `/model/backbone/Resize_1`
+1. `/generator/blocks.0/Add_1_output_0: float32[1,1601,192]` -> `float32[1,192,640,640]`
+2. `/generator/blocks.4/Add_1_output_0: float32[1,1601,192]` -> `float32[1,192,640,640]`
+3. `/generator/blocks.7/Add_1_output_0: float32[1,1601,192]` -> `float32[1,192,640,640]`
+4. `/generator/blocks.11/Add_1_output_0: float32[1,1601,192]` -> `float32[1,192,640,640]`
+5. `input: float32[1,3,640,640]`
+6. `1 + 2 + 3 + 4 + 5` -> `/generator/Concat_14_output_0: float32[1,771,640,640]`
 
 ## ONNX Export
 
