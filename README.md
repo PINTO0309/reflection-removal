@@ -89,12 +89,14 @@ To resume from a previous checkpoint inside `dinov3_vits16/`:
 
 ```bash
 uv run python main.py \
---resume \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
+--exp_name dinov3_vits16_residual \
+--residual_skips \
+--residual_init 0.1 \
 --use_amp \
---exp_name dinov3_vits16
+--resume
 ```
 |Value|Note|
 |:-|:-|
