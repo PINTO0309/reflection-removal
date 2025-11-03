@@ -132,7 +132,7 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
---exp_name dinov3_vitt_distill \
+--exp_name dinov3_vitt_distill_residual \
 --ckpt_dir ckpts \
 --residual_skips \
 --residual_init 0.1 \
