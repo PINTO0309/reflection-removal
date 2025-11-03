@@ -89,7 +89,7 @@ Distillation from dinov3_vits16 to dinov3_vitt and fine-tuned backbone in DEIMv2
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
---exp_name dinov3_vitt \
+--exp_name dinov3_vitt_distill \
 --backbone dinov3_vitt \
 --ckpt_dir ckpts \
 --distill_teacher_backbone dinov3_vits16 \
