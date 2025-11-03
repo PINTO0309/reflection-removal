@@ -112,7 +112,7 @@ uv run python main.py \
 
 Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
 
-Distillation from dinov3_vits16 to dinov3_vitt and fine-tuned backbone in DEIMv2 for students to learn.
+Distillation from `dinov3_vits16` to `dinov3_vitt` and fine-tuned backbone in DEIMv2 for students to learn.
 
 ```bash
 # Without residual blocks
