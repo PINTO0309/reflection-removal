@@ -26,9 +26,6 @@ BACKBONE_CHOICES = [
     "dinov3_vitb16",
 ]
 
-DEIMV2_PREFIX = "deimv2_"
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export the reflection removal generator to ONNX.")
     parser.add_argument("--checkpoint", type=Path, required=True, help="Path to generator checkpoint (.pt).")
@@ -42,6 +39,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=512, help="Dummy input width.")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version.")
     parser.add_argument("--static_shape", action="store_true", help="Disable dynamic height/width axes in the ONNX graph.")
+    parser.add_argument(
+        "--head_only",
+        action="store_true",
+        help="Export only the generator head. Useful when backbone features are provided externally.",
+    )
     return parser.parse_args()
 
 
@@ -79,69 +81,38 @@ def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path):
     raise ValueError(f"Unsupported backbone '{backbone}'.")
 
 
-def _uses_deimv2_weights(feature_extractor: Any) -> bool:
-    weights_path = getattr(feature_extractor, "weights_path", None)
-    if isinstance(weights_path, (str, Path)):
-        if Path(weights_path).name.startswith(DEIMV2_PREFIX):
-            return True
-    ckpt_filename = getattr(feature_extractor, "CKPT_FILENAME", None)
-    if isinstance(ckpt_filename, str) and ckpt_filename.startswith(DEIMV2_PREFIX):
-        ckpt_root = getattr(feature_extractor, "ckpt_root", None)
-        if ckpt_root:
-            path = Path(ckpt_root) / ckpt_filename
-            if path.is_file():
-                return True
-    return False
-
-
-def _resolve_backbone_feature_key(feature_extractor: Any) -> str | None:
-    if not _uses_deimv2_weights(feature_extractor):
-        return None
-    layer_dims = getattr(feature_extractor, "layer_dims", {})
-    if isinstance(layer_dims, dict):
-        if "final" in layer_dims:
-            return "final"
-    else:
-        dims = feature_extractor.layer_dims
-        if "final" in dims:
-            return "final"
-    hyper_layers = getattr(feature_extractor, "hyper_layers", [])
-    if hyper_layers:
-        candidate = hyper_layers[-1]
-        dims = getattr(feature_extractor, "layer_dims", {})
-        if isinstance(dims, dict):
-            if candidate in dims:
-                return candidate
-        else:
-            layer_map = feature_extractor.layer_dims
-            if candidate in layer_map:
-                return candidate
-    return None
-
-
 class GeneratorExportWrapper(torch.nn.Module):
-    def __init__(self, generator: HypercolumnGenerator, feature_key: str | None):
+    def __init__(self, generator: HypercolumnGenerator):
         super().__init__()
         self.generator = generator
-        self.feature_key = feature_key
-
-    @property
-    def include_backbone_output(self) -> bool:
-        return self.feature_key is not None
 
     def forward(self, x: torch.Tensor):
-        if not self.include_backbone_output:
-            transmission, reflection = self.generator(x)
-            return transmission, reflection
+        transmission, reflection = self.generator(x)
+        return transmission, reflection
 
-        transmission, reflection, features = self.generator(x, return_features=True)
-        if not isinstance(features, dict):
-            raise RuntimeError("Generator did not return feature maps when requested.")
-        feature_key = self.feature_key
-        if feature_key not in features:
-            raise RuntimeError(f"Feature '{feature_key}' not found in generator outputs.")
-        backbone_output = features[feature_key]
-        return transmission, reflection, backbone_output
+
+class GeneratorHeadExportWrapper(torch.nn.Module):
+    def __init__(self, generator: HypercolumnGenerator):
+        super().__init__()
+        self.generator = generator
+
+    @property
+    def input_channels(self) -> int:
+        return self.generator.conv0.conv.in_channels
+
+    def forward(self, hyper_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        net = self.generator.conv0(hyper_input)
+        net = self.generator.conv1(net)
+        net = self.generator.conv2(net)
+        net = self.generator.conv3(net)
+        net = self.generator.conv4(net)
+        net = self.generator.conv5(net)
+        net = self.generator.conv6(net)
+        net = self.generator.conv7(net)
+        net = self.generator.conv9(net)
+        outputs = self.generator.conv_last(net)
+        transmission, reflection = torch.chunk(outputs, 2, dim=1)
+        return transmission, reflection
 
 
 def load_generator_state(generator: HypercolumnGenerator, state: Any, backbone: str) -> None:
@@ -165,11 +136,11 @@ def load_generator_state(generator: HypercolumnGenerator, state: Any, backbone: 
     generator.load_state_dict(state)
 
 
-def build_dummy_input(args: argparse.Namespace, device: torch.device) -> torch.Tensor:
+def build_dummy_input(args: argparse.Namespace, device: torch.device, channels: int = 3) -> torch.Tensor:
     batch_size: int = args.batch_size
     height: int = args.height
     width: int = args.width
-    shape = (batch_size, 3, height, width)
+    shape = (batch_size, channels, height, width)
     return torch.randn(shape, device=device)
 
 
@@ -334,36 +305,39 @@ def export_onnx(args: argparse.Namespace) -> None:
 
     feature_extractor = create_feature_extractor(backbone, use_hyper, ckpt_dir)
     feature_extractor.eval()
-    feature_key = _resolve_backbone_feature_key(feature_extractor)
     generator = HypercolumnGenerator(feature_extractor).to(device)
     generator.eval()
     load_generator_state(generator, state, backbone)
-    export_module = GeneratorExportWrapper(generator, feature_key).to(device)
-    export_module.eval()
 
-    dummy_input = build_dummy_input(args, device)
+    if args.head_only:
+        export_module = GeneratorHeadExportWrapper(generator).to(device)
+        export_module.eval()
+        input_name = "hyper_input"
+        output_names = ["transmission", "reflection"]
+        input_channels = export_module.input_channels
+    else:
+        export_module = GeneratorExportWrapper(generator).to(device)
+        export_module.eval()
+        input_name = "input"
+        output_names = ["transmission", "reflection"]
+        input_channels = 3
 
-    output_names = ["transmission", "reflection"]
-    if feature_key is not None:
-        output_names.append("backbone_output")
+    dummy_input = build_dummy_input(args, device, channels=input_channels)
 
     dynamic_axes: Dict[str, Dict[int, str]] | None = None
     if not static_shape:
         dynamic_axes = {
-            "input": {0: "batch", 2: "height", 3: "width"},
+            input_name: {0: "batch", 2: "height", 3: "width"},
             "transmission": {0: "batch", 2: "height", 3: "width"},
             "reflection": {0: "batch", 2: "height", 3: "width"},
         }
-        if feature_key is not None:
-            dynamic_axes["backbone_output"] = {0: "batch", 2: "height", 3: "width"}
-
     output.parent.mkdir(parents=True, exist_ok=True)
 
     torch.onnx.export(
         export_module,
         (dummy_input,),
         output,
-        input_names=["input"],
+        input_names=[input_name],
         output_names=output_names,
         opset_version=args.opset,
         dynamic_axes=dynamic_axes,
