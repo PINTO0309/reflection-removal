@@ -149,6 +149,10 @@ If `--test_only` is omitted, the script trains by default and writes checkpoints
 
 Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
 
+## DEIMv2-S backbone output
+
+`/model/backbone/Reshape_1_output_0: [1, 192, 40, 40]` or `/model/backbone/Resize_1`
+
 ## Citation
 
 If you use this repository in your research, please cite both the original method and this implementation:
