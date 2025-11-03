@@ -80,6 +80,8 @@ uv run python main.py \
 |percep|The average perceptual loss, which measures distance in feature space (DINO/VGG).|
 |grad|The average exclusion/gradient loss, which prevents the gradients of the transmitted image and the reflected image from overlapping.|
 |adv|The average adversarial loss (BCE), which is used to make the classifier believe the image is "real."|
+|feat_dist|Mean MSE between the student and projected teacher feature maps; reported only when feature distillation is enabled.|
+|pix_dist|Mean L1 distance between the student outputs and the frozen teacher outputs (transmission, and reflection when available); reported only when pixel distillation is enabled.|
 
 Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
 
