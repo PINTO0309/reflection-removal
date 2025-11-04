@@ -167,6 +167,19 @@ uv run python main.py \
 --distill_teacher_backbone dinov3_vits16 \
 --distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_residual.pt \
 --use_amp
+
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vits16 \
+--exp_name dinov3_vits16_distill_disthyper_residual \
+--ckpt_dir ckpts \
+--use_distributed_hypercolumn \
+--residual_skips \
+--residual_init 0.1 \
+--distill_teacher_backbone dinov3_vitb16 \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vitb16.pt \
+--use_amp
 ```
 
 ## Interpreting the Loss Components
