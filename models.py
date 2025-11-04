@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import warnings
 from pathlib import Path
@@ -60,9 +61,13 @@ class ConvNormActivation(nn.Module):
 class FeatureExtractorBase(nn.Module):
     """Base interface for perceptual backbones."""
 
-    def __init__(self, use_hyper: bool = True):
+    def __init__(self, use_hyper: bool = True, distributed_hypercolumn: bool = False):
         super().__init__()
         self.use_hyper = use_hyper
+        self.distributed_hypercolumn = distributed_hypercolumn
+        self._distributed_reduction_layers: Optional[nn.ModuleDict] = None
+        self._distributed_post: Optional[nn.Conv2d] = None
+        self._distributed_feature_channels: Optional[int] = None
 
     @property
     def hyper_layers(self) -> List[str]:
@@ -83,23 +88,71 @@ class FeatureExtractorBase(nn.Module):
     def extract_features(self, x: torch.Tensor, require_grad: bool = True) -> Dict[str, torch.Tensor]:
         raise NotImplementedError
 
+    def _init_distributed_hypercolumn_layers(self) -> None:
+        if not self.distributed_hypercolumn:
+            return
+        if self._distributed_reduction_layers is not None and self._distributed_post is not None:
+            return
+        dims = self.layer_dims
+        hyper_layers = list(self.hyper_layers)
+        reductions: Dict[str, nn.Conv2d] = {}
+        reduced_total = 0
+        for name in hyper_layers:
+            in_channels = dims.get(name)
+            if in_channels is None:
+                raise KeyError(f"Layer dimensions for '{name}' not available.")
+            out_channels = max(1, math.ceil(in_channels / 4))
+            conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
+            nn.init.kaiming_normal_(conv.weight, mode="fan_out", nonlinearity="relu")
+            if conv.bias is not None:
+                nn.init.zeros_(conv.bias)
+            reductions[name] = conv
+            reduced_total += out_channels
+        total_in = reduced_total + 3
+        projector = nn.Conv2d(total_in, 64, kernel_size=1, bias=True)
+        nn.init.kaiming_normal_(projector.weight, mode="fan_out", nonlinearity="relu")
+        nn.init.zeros_(projector.bias)
+        self._distributed_reduction_layers = nn.ModuleDict(reductions)
+        self._distributed_post = projector
+        self._distributed_feature_channels = max(self._distributed_post.out_channels - 3, 0)
+
     def build_hypercolumns_with_features(
         self,
         x: torch.Tensor,
         require_grad: bool = True,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Concatenate hypercolumn features with the original input and return feature maps."""
+        if self.distributed_hypercolumn:
+            self._init_distributed_hypercolumn_layers()
+
         features = self.extract_features(x, require_grad=require_grad)
         hyper_maps: List[torch.Tensor] = []
         for name in self.hyper_layers:
             feat = features[name]
+            if self.distributed_hypercolumn and self._distributed_reduction_layers is not None:
+                reducer = self._distributed_reduction_layers.get(name)
+                if reducer is None:
+                    raise KeyError(f"Reduction layer for '{name}' not initialised.")
+                if self.use_hyper:
+                    feat = reducer(feat)
+                else:
+                    feat = feat.new_zeros(
+                        feat.shape[0],
+                        reducer.out_channels,
+                        feat.shape[2],
+                        feat.shape[3],
+                    )
             if feat.shape[-2:] != x.shape[-2:]:
                 feat = F.interpolate(feat, size=x.shape[-2:], mode="bilinear", align_corners=False)
             if self.use_hyper:
                 hyper_maps.append(feat)
             else:
                 hyper_maps.append(torch.zeros_like(feat))
-        hyper = torch.cat(hyper_maps + [x], dim=1)
+        hyper_input = torch.cat(hyper_maps + [x], dim=1)
+        if self.distributed_hypercolumn and self._distributed_post is not None:
+            hyper = self._distributed_post(hyper_input)
+        else:
+            hyper = hyper_input
         return hyper, features
 
     def build_hypercolumns(self, x: torch.Tensor) -> torch.Tensor:
@@ -267,8 +320,13 @@ class VGGFeatureExtractor(FeatureExtractorBase):
         ("conv5_2", 10.0 / 1.5),
     ]
 
-    def __init__(self, use_hyper: bool = True, weights: VGG19_Weights = VGG19_Weights.IMAGENET1K_V1):
-        super().__init__(use_hyper=use_hyper)
+    def __init__(
+        self,
+        use_hyper: bool = True,
+        weights: VGG19_Weights = VGG19_Weights.IMAGENET1K_V1,
+        distributed_hypercolumn: bool = False,
+    ):
+        super().__init__(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
         vgg = vgg19(weights=weights).features
         self.slice1 = vgg[:4]
         self.slice2 = vgg[4:9]
@@ -283,6 +341,7 @@ class VGGFeatureExtractor(FeatureExtractorBase):
         std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
         self.register_buffer("mean", mean)
         self.register_buffer("std", std)
+        self._init_distributed_hypercolumn_layers()
 
     @property
     def hyper_layers(self) -> List[str]:
@@ -294,6 +353,8 @@ class VGGFeatureExtractor(FeatureExtractorBase):
 
     @property
     def hypercolumn_channels(self) -> int:
+        if self.distributed_hypercolumn and self._distributed_feature_channels is not None:
+            return self._distributed_feature_channels
         return sum(self._LAYER_DIMS[layer] for layer in self._HYPER_LAYERS)
 
     @property
@@ -331,8 +392,14 @@ class DINOFeatureExtractor(FeatureExtractorBase):
     DEFAULT_REPO = "facebookresearch/dinov3"
     DEFAULT_REF = "7bf81b2a0eb0e330dbc84a5d3d31d86ed3cdbd84"
 
-    def __init__(self, arch: str, use_hyper: bool = True, ckpt_root: Optional[Path] = None):
-        super().__init__(use_hyper=use_hyper)
+    def __init__(
+        self,
+        arch: str,
+        use_hyper: bool = True,
+        ckpt_root: Optional[Path] = None,
+        distributed_hypercolumn: bool = False,
+    ):
+        super().__init__(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
         self.arch = arch
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else None
         self.weights_path = self._resolve_weights_path()
@@ -376,6 +443,7 @@ class DINOFeatureExtractor(FeatureExtractorBase):
         self._feature_cache: Dict[str, torch.Tensor] = {}
         self._hook_handles: List[torch.utils.hooks.RemovableHandle] = []
         self._register_hooks()
+        self._init_distributed_hypercolumn_layers()
 
     def _resolve_weights_path(self) -> Optional[str]:
         if self.ckpt_root is None:
@@ -487,6 +555,8 @@ class DINOFeatureExtractor(FeatureExtractorBase):
 
     @property
     def hypercolumn_channels(self) -> int:
+        if self.distributed_hypercolumn and self._distributed_feature_channels is not None:
+            return self._distributed_feature_channels
         return sum(self._layer_dims[layer] for layer in self._hyper_layers)
 
     @property
@@ -577,8 +647,13 @@ class HGNetFeatureExtractor(FeatureExtractorBase):
     CKPT_FILENAME = "deimv2_hgnetv2_n_wholebody34.pth"
     STAGE_NAMES = ["stage1", "stage2", "stage3", "stage4"]
 
-    def __init__(self, use_hyper: bool = True, ckpt_root: Optional[Path] = None):
-        super().__init__(use_hyper=use_hyper)
+    def __init__(
+        self,
+        use_hyper: bool = True,
+        ckpt_root: Optional[Path] = None,
+        distributed_hypercolumn: bool = False,
+    ):
+        super().__init__(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else None
         self.model = HGNetV2(name="B0", use_lab=True, return_indices=tuple(range(len(self.STAGE_NAMES))))
         self.model.eval()
@@ -597,6 +672,7 @@ class HGNetFeatureExtractor(FeatureExtractorBase):
         self._perceptual_layers = [("input", 1.0)] + [(name, 1.0) for name in self._hyper_layers]
         if "final" in self._layer_dims:
             self._perceptual_layers.append(("final", 1.0))
+        self._init_distributed_hypercolumn_layers()
 
     def _load_weights(self) -> None:
         if self.ckpt_root is None:
@@ -628,6 +704,8 @@ class HGNetFeatureExtractor(FeatureExtractorBase):
 
     @property
     def hypercolumn_channels(self) -> int:
+        if self.distributed_hypercolumn and self._distributed_feature_channels is not None:
+            return self._distributed_feature_channels
         return sum(self._layer_dims[layer] for layer in self._hyper_layers)
 
     @property

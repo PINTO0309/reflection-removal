@@ -149,13 +149,27 @@ def resolve_backbone(state: Any, override: str | None) -> str:
     raise ValueError("Backbone not provided and checkpoint does not store the backbone identifier.")
 
 
-def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path):
+def create_feature_extractor(
+    backbone: str,
+    use_hyper: bool,
+    ckpt_dir: Path,
+    distributed_hypercolumn: bool = False,
+):
     if backbone == "vgg19":
-        return VGGFeatureExtractor(use_hyper=use_hyper)
+        return VGGFeatureExtractor(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
     if backbone == "hgnetv2":
-        return HGNetFeatureExtractor(use_hyper=use_hyper, ckpt_root=ckpt_dir)
+        return HGNetFeatureExtractor(
+            use_hyper=use_hyper,
+            ckpt_root=ckpt_dir,
+            distributed_hypercolumn=distributed_hypercolumn,
+        )
     if backbone in DINOFeatureExtractor.CKPT_FILENAMES:
-        return DINOFeatureExtractor(backbone, use_hyper=use_hyper, ckpt_root=ckpt_dir)
+        return DINOFeatureExtractor(
+            backbone,
+            use_hyper=use_hyper,
+            ckpt_root=ckpt_dir,
+            distributed_hypercolumn=distributed_hypercolumn,
+        )
     raise ValueError(f"Unsupported backbone '{backbone}'.")
 
 
@@ -656,7 +670,17 @@ def export_onnx(args: argparse.Namespace) -> None:
     has_residual = variant == GENERATOR_VARIANT_RESIDUAL
     has_output_skip = state_dict_has_output_skip(state_dict)
 
-    feature_extractor = create_feature_extractor(backbone, use_hyper, ckpt_dir)
+    distributed_hypercolumn = any(
+        key.startswith("feature_extractor._distributed_reduction_layers")
+        or key.startswith("feature_extractor._distributed_post")
+        for key in state_dict.keys()
+    )
+    feature_extractor = create_feature_extractor(
+        backbone,
+        use_hyper,
+        ckpt_dir,
+        distributed_hypercolumn=distributed_hypercolumn,
+    )
     feature_extractor.eval()
     if has_residual:
         output_skip_init = 0.0 if has_output_skip else None

@@ -86,6 +86,19 @@ uv run python main.py \
 --residual_init 0.1 \
 --use_amp
 ```
+```bash
+# Initialized with pretrained weights + Distributed Hypercolumn + Residual blocks
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vits16 \
+--exp_name dinov3_vits16_residual \
+--ckpt_file ckpts/reflection_removal_dinov3_vits16.pt \
+--use_distributed_hypercolumn \
+--residual_skips \
+--residual_init 0.1 \
+--use_amp
+```
 
 To resume from a previous checkpoint inside `dinov3_vits16/`:
 
@@ -95,6 +108,7 @@ uv run python main.py \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
 --exp_name dinov3_vits16_residual \
+--use_distributed_hypercolumn \
 --residual_skips \
 --residual_init 0.1 \
 --use_amp \
@@ -115,7 +129,7 @@ Therefore, the loss display is not the final total loss, but an indicator for ch
 Distillation from `dinov3_vits16` to `dinov3_vitt` and fine-tuned backbone in DEIMv2 for students to learn.
 
 ```bash
-# Without residual blocks
+# Without Residual blocks
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
@@ -127,13 +141,28 @@ uv run python main.py \
 --use_amp
 ```
 ```bash
-# With residual blocks
+# With Residual blocks
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
 --exp_name dinov3_vitt_distill_residual \
 --ckpt_dir ckpts \
+--residual_skips \
+--residual_init 0.1 \
+--distill_teacher_backbone dinov3_vits16 \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_residual.pt \
+--use_amp
+```
+```bash
+# With Distributed Hypercolumn + Residual blocks
+uv run python main.py \
+--data_syn_dir reflection-dataset/synthetic \
+--data_real_dir reflection-dataset/real \
+--backbone dinov3_vitt \
+--exp_name dinov3_vitt_distill_residual \
+--ckpt_dir ckpts \
+--use_distributed_hypercolumn \
 --residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
