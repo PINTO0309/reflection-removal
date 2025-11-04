@@ -87,13 +87,12 @@ uv run python main.py \
 --use_amp
 ```
 ```bash
-# Initialized with pretrained weights + Distributed Hypercolumn + Residual blocks
+# Distributed Hypercolumn + Residual blocks
 uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
---exp_name dinov3_vits16_residual \
---ckpt_file ckpts/reflection_removal_dinov3_vits16.pt \
+--exp_name dinov3_vits16_disthyper_residual \
 --use_distributed_hypercolumn \
 --residual_skips \
 --residual_init 0.1 \
