@@ -258,6 +258,15 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
   ```
   <img width="900" alt="image" src="https://github.com/user-attachments/assets/cff6fa45-ecc0-460b-a65b-182ae1e2bd13" />
 
+## ONNX Inference
+```bash
+uv run python demo_reflection_removal.py \
+--input test_images \
+--output runs/test \
+--model dinov3_vits16_gennerator_640x640_640x640.onnx \
+--provider CUDAExecutionProvider
+```
+
 ## Citation
 
 If you use this repository in your research, please cite both the original method and this implementation:
