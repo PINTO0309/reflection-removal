@@ -222,14 +222,14 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
 - Backbone + Head
   ```bash
   uv run python export_onnx.py \
---checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
---output dinov3_vitt_gennerator_640x640_640x640.onnx \
---backbone dinov3_vitt \
---static_shape \
---height 640 \
---width 640 \
---head_height 640 \
---head_width 640
+  --checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
+  --output dinov3_vitt_gennerator_640x640_640x640.onnx \
+  --backbone dinov3_vitt \
+  --static_shape \
+  --height 640 \
+  --width 640 \
+  --head_height 640 \
+  --head_width 640
 
   uv run python export_onnx.py \
   --checkpoint runs/dinov3_vitt/epoch_0001/checkpoint.pt \
