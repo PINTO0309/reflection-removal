@@ -130,9 +130,9 @@ class FeatureExtractorBase(nn.Module):
         for name in self.hyper_layers:
             feat = features[name]
             if self.distributed_hypercolumn and self._distributed_reduction_layers is not None:
-                reducer = self._distributed_reduction_layers.get(name)
-                if reducer is None:
+                if name not in self._distributed_reduction_layers:
                     raise KeyError(f"Reduction layer for '{name}' not initialised.")
+                reducer = self._distributed_reduction_layers[name]
                 if self.use_hyper:
                     feat = reducer(feat)
                 else:
