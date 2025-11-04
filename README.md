@@ -81,7 +81,7 @@ uv run python main.py \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
 --exp_name dinov3_vits16_residual \
---ckpt_file ckpts/reflection_removal_dinov3_vits16.pt
+--ckpt_file ckpts/reflection_removal_dinov3_vits16.pt \
 --residual_skips \
 --residual_init 0.1 \
 --use_amp
