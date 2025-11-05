@@ -217,7 +217,12 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
     def input_names(self) -> List[str]:
         return self._input_names
 
-    def _apply_concat_preprocess(self, feature: torch.Tensor, target_size: tuple[int, int]) -> torch.Tensor:
+    def _apply_concat_preprocess(
+        self,
+        feature: torch.Tensor,
+        layer_name: str,
+        target_size: tuple[int, int],
+    ) -> torch.Tensor:
         target_h, target_w = target_size
         if feature.dim() == 3:
             if not self.patch_size:
@@ -238,7 +243,15 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
         else:
             raise ValueError("Unsupported feature shape for head export.")
 
-        feature = F.interpolate(feature, size=(target_h, target_w), mode="bilinear", align_corners=False)
+        reductions = getattr(self.generator.feature_extractor, "_distributed_reduction_layers", None)
+        use_distributed = getattr(self.generator.feature_extractor, "distributed_hypercolumn", False)
+        if use_distributed and reductions is not None and layer_name in reductions:
+            feature = reductions[layer_name](feature)
+
+        if feature.shape[-2:] != (target_h, target_w):
+            feature = F.interpolate(feature, size=(target_h, target_w), mode="bilinear", align_corners=False)
+        if not self.use_hyper:
+            feature = torch.zeros_like(feature)
         return feature
 
     def forward(self, *inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -248,11 +261,9 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
         *feature_maps, image = inputs
         target_size = (self.head_height, self.head_width)
         prepared_features: List[torch.Tensor] = []
-        for feature in feature_maps:
-            feature = self._apply_concat_preprocess(feature, target_size)
-            if not self.use_hyper:
-                feature = torch.zeros_like(feature)
-            prepared_features.append(feature)
+        for name, feature in zip(self.hyper_layers, feature_maps):
+            processed = self._apply_concat_preprocess(feature, name, target_size)
+            prepared_features.append(processed)
 
         image_prepared = F.interpolate(image, size=target_size, mode="bilinear", align_corners=False)
 
@@ -260,6 +271,11 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
             hyper_input = torch.cat(prepared_features + [image_prepared], dim=1)
         else:
             hyper_input = image_prepared
+
+        use_distributed = getattr(self.generator.feature_extractor, "distributed_hypercolumn", False)
+        distributed_post = getattr(self.generator.feature_extractor, "_distributed_post", None)
+        if use_distributed and distributed_post is not None:
+            hyper_input = distributed_post(hyper_input)
 
         outputs = self.generator.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
