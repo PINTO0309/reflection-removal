@@ -120,12 +120,17 @@ class FeatureExtractorBase(nn.Module):
         self,
         x: torch.Tensor,
         require_grad: bool = True,
+        target_size: Optional[Tuple[int, int]] = None,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Concatenate hypercolumn features with the original input and return feature maps."""
         if self.distributed_hypercolumn:
             self._init_distributed_hypercolumn_layers()
 
         features = self.extract_features(x, require_grad=require_grad)
+        if target_size is None:
+            target_hw = x.shape[-2:]
+        else:
+            target_hw = target_size
         hyper_maps: List[torch.Tensor] = []
         for name in self.hyper_layers:
             feat = features[name]
@@ -142,13 +147,17 @@ class FeatureExtractorBase(nn.Module):
                         feat.shape[2],
                         feat.shape[3],
                     )
-            if feat.shape[-2:] != x.shape[-2:]:
-                feat = F.interpolate(feat, size=x.shape[-2:], mode="bilinear", align_corners=False)
+            if feat.shape[-2:] != target_hw:
+                feat = F.interpolate(feat, size=target_hw, mode="bilinear", align_corners=False)
             if self.use_hyper:
                 hyper_maps.append(feat)
             else:
                 hyper_maps.append(torch.zeros_like(feat))
-        hyper_input = torch.cat(hyper_maps + [x], dim=1)
+        if x.shape[-2:] != target_hw:
+            x_resized = F.interpolate(x, size=target_hw, mode="bilinear", align_corners=False)
+        else:
+            x_resized = x
+        hyper_input = torch.cat(hyper_maps + [x_resized], dim=1)
         if self.distributed_hypercolumn and self._distributed_post is not None:
             hyper = self._distributed_post(hyper_input)
         else:
@@ -634,10 +643,6 @@ class DINOFeatureExtractor(FeatureExtractorBase):
         else:
             raise ValueError("Unsupported tensor shape for feature conversion.")
 
-        if feat_map.shape[-2:] != (padded_h, padded_w):
-            feat_map = F.interpolate(feat_map, size=(padded_h, padded_w), mode="bilinear", align_corners=False)
-        if padded_h != target_h or padded_w != target_w:
-            feat_map = feat_map[:, :, :target_h, :target_w]
         return feat_map
 
 

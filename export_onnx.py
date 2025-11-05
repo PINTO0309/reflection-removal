@@ -289,22 +289,13 @@ class FullGeneratorExportWrapper(torch.nn.Module):
         return tensor
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.feature_extractor.extract_features(x, require_grad=True)
-        hyper_maps: List[torch.Tensor] = []
-        for name in self.feature_extractor.hyper_layers:
-            feat = features[name]
-            feat = self._resize_to_head(feat)
-            if self.feature_extractor.use_hyper:
-                hyper_maps.append(feat)
-            else:
-                hyper_maps.append(torch.zeros_like(feat))
-
+        target_size = (self.head_height, self.head_width)
+        hyper_input, _ = self.feature_extractor.build_hypercolumns_with_features(
+            x,
+            require_grad=True,
+            target_size=target_size,
+        )
         image_resized = self._resize_to_head(x)
-        if hyper_maps:
-            hyper_input = torch.cat(hyper_maps + [image_resized], dim=1)
-        else:
-            hyper_input = image_resized
-
         outputs = self.generator.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
         skip_scale = getattr(self.generator, "output_skip_scale", None)
