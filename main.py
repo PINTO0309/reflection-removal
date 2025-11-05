@@ -1,4 +1,5 @@
 import argparse
+import math
 import random
 import shutil
 import time
@@ -86,6 +87,80 @@ def state_dict_has_output_skip(state_dict: Dict[str, torch.Tensor]) -> bool:
     return any(key.startswith("output_skip_scale") for key in state_dict.keys())
 
 
+def state_dict_uses_distributed_hypercolumns(state_dict: Dict[str, torch.Tensor]) -> bool:
+    prefixes = (
+        "feature_extractor._distributed_reduction_layers",
+        "feature_extractor._distributed_post",
+    )
+    return any(key.startswith(prefixes) for key in state_dict.keys())
+
+
+def infer_hypercolumn_reduction_scale(
+    state_dict: Dict[str, torch.Tensor],
+    default: int = 4,
+) -> int:
+    prefix = "feature_extractor._distributed_reduction_layers."
+    suffix = ".weight"
+    channel_pairs: List[Tuple[int, int]] = []
+    for key, value in state_dict.items():
+        if not (key.startswith(prefix) and key.endswith(suffix)):
+            continue
+        if not isinstance(value, torch.Tensor) or value.ndim < 2:
+            continue
+        out_channels = int(value.shape[0])
+        in_channels = int(value.shape[1])
+        if out_channels <= 0:
+            continue
+        channel_pairs.append((in_channels, out_channels))
+
+    if not channel_pairs:
+        return default
+
+    lower_bound = max(math.ceil(in_ch / out_ch) for in_ch, out_ch in channel_pairs)
+    upper_candidates = [
+        (in_ch - 1) // (out_ch - 1)
+        for in_ch, out_ch in channel_pairs
+        if out_ch > 1
+    ]
+
+    if upper_candidates:
+        upper_bound = min(upper_candidates)
+        if upper_bound < lower_bound:
+            warnings.warn(
+                (
+                    "Inconsistent distributed hypercolumn reductions detected in checkpoint; "
+                    f"falling back to minimum feasible scale {lower_bound}."
+                ),
+                RuntimeWarning,
+            )
+            candidate_range = [lower_bound]
+        else:
+            candidate_range = range(upper_bound, lower_bound - 1, -1)
+    else:
+        candidate_range = [lower_bound]
+
+    for scale in candidate_range:
+        if scale < 1:
+            continue
+        if all(math.ceil(in_ch / scale) == out_ch for in_ch, out_ch in channel_pairs):
+            return scale
+
+    warnings.warn(
+        "Unable to infer hypercolumn reduction scale from checkpoint; using default value.",
+        RuntimeWarning,
+    )
+    return default
+
+
+def build_generator_metadata(state_dict: Dict[str, torch.Tensor]) -> Dict[str, Any]:
+    distributed = state_dict_uses_distributed_hypercolumns(state_dict)
+    scale = infer_hypercolumn_reduction_scale(state_dict)
+    return {
+        "distributed_hypercolumn": distributed,
+        "hypercolumn_reduction_scale": scale,
+    }
+
+
 def _validate_checkpoint_backbone(meta: Optional[str], backbone: str) -> None:
     if meta is None:
         return
@@ -116,11 +191,20 @@ def extract_state_dict_and_variant(
     return state_dict, variant
 
 
+def prepare_generator_state(
+    state: Dict[str, Any],
+    backbone: str,
+) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, Any]]:
+    state_dict, variant = extract_state_dict_and_variant(state, backbone)
+    metadata = build_generator_metadata(state_dict)
+    return state_dict, variant, metadata
+
+
 def load_generator_state_dict_from_artifact(
     artifact_path: Path,
     device: torch.device,
     backbone: str,
-) -> Tuple[Dict[str, torch.Tensor], str]:
+) -> Tuple[Dict[str, torch.Tensor], str, Dict[str, Any]]:
     path = artifact_path
     if path.is_dir():
         generator_file = path / "generator.pt"
@@ -128,13 +212,13 @@ def load_generator_state_dict_from_artifact(
             state = torch.load(generator_file, map_location=device)
             if not isinstance(state, dict):
                 raise ValueError(f"Unsupported generator checkpoint format in {generator_file}.")
-            return extract_state_dict_and_variant(state, backbone)
+            return prepare_generator_state(state, backbone)
         checkpoint_file = path / "checkpoint_latest.pt"
         if checkpoint_file.exists():
             state = torch.load(checkpoint_file, map_location=device)
             if not isinstance(state, dict):
                 raise ValueError(f"Unsupported checkpoint format in {checkpoint_file}.")
-            return extract_state_dict_and_variant(state, backbone)
+            return prepare_generator_state(state, backbone)
         raise FileNotFoundError(
             f"No generator checkpoint found under {path}. Expected 'generator.pt' or 'checkpoint_latest.pt'."
         )
@@ -143,7 +227,7 @@ def load_generator_state_dict_from_artifact(
     state = torch.load(path, map_location=device)
     if not isinstance(state, dict):
         raise ValueError(f"Unsupported generator checkpoint format in {path}.")
-    return extract_state_dict_and_variant(state, backbone)
+    return prepare_generator_state(state, backbone)
 
 
 def parse_args() -> argparse.Namespace:
@@ -595,7 +679,7 @@ def load_generator_for_inference(
     backbone: str,
     expected_variant: Optional[str] = None,
 ) -> None:
-    state_dict, variant = load_generator_state_dict_from_artifact(exp_dir, device, backbone)
+    state_dict, variant, _ = load_generator_state_dict_from_artifact(exp_dir, device, backbone)
     if expected_variant and variant != expected_variant:
         raise ValueError(
             f"Generator checkpoint variant ({variant}) does not match requested variant ({expected_variant})."
@@ -610,7 +694,7 @@ def load_generator_weights_from_path(
     backbone: str,
     expected_variant: Optional[str] = None,
 ) -> None:
-    state_dict, variant = load_generator_state_dict_from_artifact(checkpoint_path, device, backbone)
+    state_dict, variant, _ = load_generator_state_dict_from_artifact(checkpoint_path, device, backbone)
     if expected_variant and variant != expected_variant:
         raise ValueError(
             f"Teacher checkpoint generator variant ({variant}) does not match requested variant ({expected_variant})."
@@ -680,7 +764,7 @@ def train(args: argparse.Namespace) -> None:
                 log("[w] --ckpt_file is ignored because --resume is set; resuming from runs/ checkpoints.")
             else:
                 pretrained_path = resolve_path(args.ckpt_file)
-                state_dict, ckpt_variant = load_generator_state_dict_from_artifact(
+                state_dict, ckpt_variant, _ = load_generator_state_dict_from_artifact(
                     pretrained_path,
                     device,
                     args.backbone,
@@ -699,16 +783,20 @@ def train(args: argparse.Namespace) -> None:
             pixel_distill_weight = 0.0
             use_distillation = False
         if use_distillation:
+            teacher_ckpt_path = resolve_path(args.distill_teacher_checkpoint)
+            teacher_state_dict, teacher_variant, teacher_meta = load_generator_state_dict_from_artifact(
+                teacher_ckpt_path,
+                device,
+                args.distill_teacher_backbone,
+            )
+            teacher_distributed = bool(teacher_meta.get("distributed_hypercolumn", False))
+            teacher_scale = int(teacher_meta.get("hypercolumn_reduction_scale", 4))
             teacher_feature_extractor = create_feature_extractor(
                 args.distill_teacher_backbone,
                 use_hyper,
                 ckpt_root,
-            )
-            teacher_ckpt_path = resolve_path(args.distill_teacher_checkpoint)
-            teacher_state_dict, teacher_variant = load_generator_state_dict_from_artifact(
-                teacher_ckpt_path,
-                device,
-                args.distill_teacher_backbone,
+                distributed_hypercolumn=teacher_distributed,
+                hypercolumn_reduction_scale=teacher_scale,
             )
             teacher_residual = teacher_variant == GENERATOR_VARIANT_RESIDUAL
             teacher_has_output_skip = state_dict_has_output_skip(teacher_state_dict)
@@ -725,6 +813,10 @@ def train(args: argparse.Namespace) -> None:
             log(
                 f"[i] Loaded teacher generator ({args.distill_teacher_backbone}, variant={teacher_variant}) "
                 f"from {teacher_ckpt_path}"
+            )
+            log(
+                f"[i] Teacher hypercolumn config: distributed={teacher_distributed}, "
+                f"reduction_scale={teacher_scale}"
             )
             if feature_distill_weight > 0.0:
                 teacher_dims = teacher_generator.feature_extractor.layer_dims
