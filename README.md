@@ -99,6 +99,15 @@ uv run python main.py \
 --use_amp
 ```
 
+### Distributed hypercolumns & channel reduction
+
+- `--use_distributed_hypercolumn` replaces the full hypercolumn concat (raw backbone features + RGB) with a distributed projection: each backbone stage is first reduced by a learnable 1×1 convolution and the concatenated tensor is then compressed to 64 channels via a final 1×1. This greatly lowers memory usage while keeping the generator interface unchanged. Enable this flag whenever you plan to export compact ONNX graphs or train on high resolutions; checkpoints store the necessary projection weights.
+- `--hypercolumn_channel_reduction_scale` controls how aggressively each stage is reduced. The reducer for a layer with `C` channels will emit `ceil(C / scale)` channels. The default (`4`) keeps roughly 25 % of the original channels per stage; higher values (e.g. `8`, `16`) shrink both parameters and FLOPs linearly, at the cost of fewer hypercolumn features. The final post-projection always outputs 64 channels, so downstream generator layers remain compatible across scales. When loading a checkpoint, the correct scale is inferred automatically, so you only need to pass this flag during training if you want a non-default compression ratio.
+- Practical guidance:
+  1. Start with `--use_distributed_hypercolumn --hypercolumn_channel_reduction_scale 4` for general training—it balances memory and fidelity.
+  2. If you are memory-bound, increase the scale to `8` or `16`. Expect parameter counts and compute inside the hypercolumn projector to drop by roughly ½ and ¼ respectively when moving from 4→8→16.
+  3. If you disable distributed hypercolumns, the generator reverts to concatenating fully-resolved backbone maps; this offers maximal information but is significantly heavier and may not match ONNX deployment paths.
+
 To resume from a previous checkpoint inside `dinov3_vits16/`:
 
 ```bash

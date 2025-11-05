@@ -61,10 +61,18 @@ class ConvNormActivation(nn.Module):
 class FeatureExtractorBase(nn.Module):
     """Base interface for perceptual backbones."""
 
-    def __init__(self, use_hyper: bool = True, distributed_hypercolumn: bool = False):
+    def __init__(
+        self,
+        use_hyper: bool = True,
+        distributed_hypercolumn: bool = False,
+        hypercolumn_reduction_scale: int = 4,
+    ):
         super().__init__()
         self.use_hyper = use_hyper
         self.distributed_hypercolumn = distributed_hypercolumn
+        if hypercolumn_reduction_scale < 1:
+            raise ValueError("hypercolumn_reduction_scale must be >= 1.")
+        self.hypercolumn_reduction_scale = int(hypercolumn_reduction_scale)
         self._distributed_reduction_layers: Optional[nn.ModuleDict] = None
         self._distributed_post: Optional[nn.Conv2d] = None
         self._distributed_feature_channels: Optional[int] = None
@@ -97,11 +105,12 @@ class FeatureExtractorBase(nn.Module):
         hyper_layers = list(self.hyper_layers)
         reductions: Dict[str, nn.Conv2d] = {}
         reduced_total = 0
+        scale = max(1, self.hypercolumn_reduction_scale)
         for name in hyper_layers:
             in_channels = dims.get(name)
             if in_channels is None:
                 raise KeyError(f"Layer dimensions for '{name}' not available.")
-            out_channels = max(1, math.ceil(in_channels / 4))
+            out_channels = max(1, math.ceil(in_channels / scale))
             conv = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
             nn.init.kaiming_normal_(conv.weight, mode="fan_out", nonlinearity="relu")
             if conv.bias is not None:
@@ -334,8 +343,13 @@ class VGGFeatureExtractor(FeatureExtractorBase):
         use_hyper: bool = True,
         weights: VGG19_Weights = VGG19_Weights.IMAGENET1K_V1,
         distributed_hypercolumn: bool = False,
+        hypercolumn_reduction_scale: int = 4,
     ):
-        super().__init__(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
+        super().__init__(
+            use_hyper=use_hyper,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
         vgg = vgg19(weights=weights).features
         self.slice1 = vgg[:4]
         self.slice2 = vgg[4:9]
@@ -407,8 +421,13 @@ class DINOFeatureExtractor(FeatureExtractorBase):
         use_hyper: bool = True,
         ckpt_root: Optional[Path] = None,
         distributed_hypercolumn: bool = False,
+        hypercolumn_reduction_scale: int = 4,
     ):
-        super().__init__(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
+        super().__init__(
+            use_hyper=use_hyper,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
         self.arch = arch
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else None
         self.weights_path = self._resolve_weights_path()
@@ -657,8 +676,13 @@ class HGNetFeatureExtractor(FeatureExtractorBase):
         use_hyper: bool = True,
         ckpt_root: Optional[Path] = None,
         distributed_hypercolumn: bool = False,
+        hypercolumn_reduction_scale: int = 4,
     ):
-        super().__init__(use_hyper=use_hyper, distributed_hypercolumn=distributed_hypercolumn)
+        super().__init__(
+            use_hyper=use_hyper,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
         self.ckpt_root = Path(ckpt_root) if ckpt_root is not None else None
         self.model = HGNetV2(name="B0", use_lab=True, return_indices=tuple(range(len(self.STAGE_NAMES))))
         self.model.eval()
