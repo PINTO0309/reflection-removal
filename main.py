@@ -78,7 +78,7 @@ def build_generator(
         warnings.warn(
             "--output_skip_scale is only used when --residual_skips is enabled; ignoring the value.",
             RuntimeWarning,
-        ) 
+        )
     return HypercolumnGenerator(feature_extractor)
 
 
@@ -164,6 +164,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ckpt_dir", default="ckpts", help="directory for optional pretrained backbone weights")
     parser.add_argument("--ckpt_file", default="", help="path to generator checkpoint used for weight initialization")
     parser.add_argument("--use_amp", action="store_true", help="enable automatic mixed precision during train/test")
+    parser.add_argument("--use_distributed_hypercolumn", action="store_true", help="enable distributed hypercolumn compression (per-layer reduction and 64-channel fusion)")
+    parser.add_argument("--hypercolumn_channel_reduction_scale", type=int, default=4, help="Divisor used for distributed hypercolumn channel reduction (must be >= 1).")
     parser.add_argument("--distill_teacher_backbone", default=None, choices=BACKBONE_CHOICES, help="backbone for the frozen teacher generator used in distillation")
     parser.add_argument("--distill_teacher_checkpoint", default="", help="path to a teacher generator checkpoint (.pt or checkpoint directory)")
     parser.add_argument("--distill_feature_weight", type=float, default=0.05, help="weight for feature-map distillation loss (MSE)")
@@ -171,7 +173,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--residual_skips", action="store_true", help="enable residual skip connections after the hypercolumn stem")
     parser.add_argument("--residual_init", type=float, default=0.1, help="initial residual scale when --residual_skips is enabled")
     parser.add_argument("--output_skip_scale", type=float, default=None, help="initial transmission skip scale; requires --residual_skips")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.hypercolumn_channel_reduction_scale < 1:
+        parser.error("--hypercolumn_channel_reduction_scale must be >= 1")
+    return args
 
 
 def get_experiment_dir(exp_name: str) -> Path:
@@ -195,14 +200,35 @@ def resolve_path(path_like: str | Path) -> Path:
     return PROJECT_ROOT / path
 
 
-def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path) -> FeatureExtractorBase:
+def create_feature_extractor(
+    backbone: str,
+    use_hyper: bool,
+    ckpt_dir: Path,
+    distributed_hypercolumn: bool = False,
+    hypercolumn_reduction_scale: int = 4,
+) -> FeatureExtractorBase:
     name = backbone.lower()
     if name == "vgg19":
-        return VGGFeatureExtractor(use_hyper=use_hyper)
+        return VGGFeatureExtractor(
+            use_hyper=use_hyper,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
     if name == "hgnetv2":
-        return HGNetFeatureExtractor(use_hyper=use_hyper, ckpt_root=ckpt_dir)
+        return HGNetFeatureExtractor(
+            use_hyper=use_hyper,
+            ckpt_root=ckpt_dir,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
     if name in DINOFeatureExtractor.CKPT_FILENAMES:
-        return DINOFeatureExtractor(name, use_hyper=use_hyper, ckpt_root=ckpt_dir)
+        return DINOFeatureExtractor(
+            name,
+            use_hyper=use_hyper,
+            ckpt_root=ckpt_dir,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
     raise ValueError(f"Unsupported backbone: {backbone}")
 
 
@@ -623,7 +649,13 @@ def train(args: argparse.Namespace) -> None:
     pixel_distill_weight = float(args.distill_pixel_weight)
 
     try:
-        feature_extractor = create_feature_extractor(args.backbone, use_hyper, ckpt_root)
+        feature_extractor = create_feature_extractor(
+            args.backbone,
+            use_hyper,
+            ckpt_root,
+            distributed_hypercolumn=args.use_distributed_hypercolumn,
+            hypercolumn_reduction_scale=args.hypercolumn_channel_reduction_scale,
+        )
         generator = build_generator(
             feature_extractor,
             residual_skips=args.residual_skips,
@@ -635,6 +667,9 @@ def train(args: argparse.Namespace) -> None:
         feature_extractor.eval()
         log(f"[i] Experiment directory: {exp_dir}")
         log(f"[i] Using backbone: {args.backbone}")
+        log(
+            f"[i] Hypercolumn channel reduction scale: {feature_extractor.hypercolumn_reduction_scale}"
+        )
         variant_name = generator_variant_from_module(generator)
         log(f"[i] Generator variant: {variant_name}")
         output_skip_param = getattr(generator, "output_skip_scale", None)
@@ -665,7 +700,9 @@ def train(args: argparse.Namespace) -> None:
             use_distillation = False
         if use_distillation:
             teacher_feature_extractor = create_feature_extractor(
-                args.distill_teacher_backbone, use_hyper, ckpt_root
+                args.distill_teacher_backbone,
+                use_hyper,
+                ckpt_root,
             )
             teacher_ckpt_path = resolve_path(args.distill_teacher_checkpoint)
             teacher_state_dict, teacher_variant = load_generator_state_dict_from_artifact(
@@ -1045,7 +1082,13 @@ def train(args: argparse.Namespace) -> None:
 def inference(args: argparse.Namespace) -> None:
     device = torch.device(args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu"))
     ckpt_root = resolve_path(args.ckpt_dir)
-    feature_extractor = create_feature_extractor(args.backbone, True, ckpt_root)
+    feature_extractor = create_feature_extractor(
+        args.backbone,
+        True,
+        ckpt_root,
+        distributed_hypercolumn=args.use_distributed_hypercolumn,
+        hypercolumn_reduction_scale=args.hypercolumn_channel_reduction_scale,
+    )
     generator = build_generator(
         feature_extractor,
         residual_skips=args.residual_skips,

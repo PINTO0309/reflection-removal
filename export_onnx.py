@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
 import contextlib
+import math
 import os
 import re
 import tempfile
 import argparse
+import warnings
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -45,21 +47,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=512, help="Dummy input width.")
     parser.add_argument("--opset", type=int, default=17, help="ONNX opset version.")
     parser.add_argument("--static_shape", action="store_true", help="Disable dynamic height/width axes in the ONNX graph.")
-    parser.add_argument(
-        "--head_only",
-        action="store_true",
-        help="Export only the generator head. Useful when backbone features are provided externally.",
-    )
-    parser.add_argument(
-        "--head_height",
-        type=int,
-        help="Target head resolution height when exporting with --head_only. Defaults to --height.",
-    )
-    parser.add_argument(
-        "--head_width",
-        type=int,
-        help="Target head resolution width when exporting with --head_only. Defaults to --width.",
-    )
+    parser.add_argument("--head_only", action="store_true", help="Export only the generator head. Useful when backbone features are provided externally.")
+    parser.add_argument("--head_height", type=int, help="Target head resolution height when exporting with --head_only. Defaults to --height.")
+    parser.add_argument("--head_width", type=int, help="Target head resolution width when exporting with --head_only. Defaults to --width.")
     return parser.parse_args()
 
 
@@ -132,6 +122,63 @@ def state_dict_has_output_skip(state_dict: Dict[str, torch.Tensor]) -> bool:
     return any(key.startswith("output_skip_scale") for key in state_dict.keys())
 
 
+def infer_hypercolumn_reduction_scale(
+    state_dict: Dict[str, torch.Tensor],
+    default: int = 4,
+) -> int:
+    prefix = "feature_extractor._distributed_reduction_layers."
+    suffix = ".weight"
+    channel_pairs: List[Tuple[int, int]] = []
+    for key, value in state_dict.items():
+        if not (key.startswith(prefix) and key.endswith(suffix)):
+            continue
+        if not isinstance(value, torch.Tensor) or value.ndim < 2:
+            continue
+        out_channels = int(value.shape[0])
+        in_channels = int(value.shape[1])
+        if out_channels <= 0:
+            continue
+        channel_pairs.append((in_channels, out_channels))
+
+    if not channel_pairs:
+        return default
+
+    lower_bound = max(math.ceil(in_ch / out_ch) for in_ch, out_ch in channel_pairs)
+    upper_candidates = [
+        (in_ch - 1) // (out_ch - 1)
+        for in_ch, out_ch in channel_pairs
+        if out_ch > 1
+    ]
+
+    if upper_candidates:
+        upper_bound = min(upper_candidates)
+        if upper_bound < lower_bound:
+            warnings.warn(
+                (
+                    "Inconsistent distributed hypercolumn reductions detected in checkpoint; "
+                    f"falling back to minimum feasible scale {lower_bound}."
+                ),
+                RuntimeWarning,
+            )
+            candidate_range = [lower_bound]
+        else:
+            candidate_range = range(upper_bound, lower_bound - 1, -1)
+    else:
+        candidate_range = [lower_bound]
+
+    for scale in candidate_range:
+        if scale < 1:
+            continue
+        if all(math.ceil(in_ch / scale) == out_ch for in_ch, out_ch in channel_pairs):
+            return scale
+
+    warnings.warn(
+        "Unable to infer hypercolumn reduction scale from checkpoint; using default value.",
+        RuntimeWarning,
+    )
+    return default
+
+
 def resolve_backbone(state: Any, override: str | None) -> str:
     if override:
         override_norm = _normalise_backbone(override)
@@ -149,13 +196,34 @@ def resolve_backbone(state: Any, override: str | None) -> str:
     raise ValueError("Backbone not provided and checkpoint does not store the backbone identifier.")
 
 
-def create_feature_extractor(backbone: str, use_hyper: bool, ckpt_dir: Path):
+def create_feature_extractor(
+    backbone: str,
+    use_hyper: bool,
+    ckpt_dir: Path,
+    distributed_hypercolumn: bool = False,
+    hypercolumn_reduction_scale: int = 4,
+):
     if backbone == "vgg19":
-        return VGGFeatureExtractor(use_hyper=use_hyper)
+        return VGGFeatureExtractor(
+            use_hyper=use_hyper,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
     if backbone == "hgnetv2":
-        return HGNetFeatureExtractor(use_hyper=use_hyper, ckpt_root=ckpt_dir)
+        return HGNetFeatureExtractor(
+            use_hyper=use_hyper,
+            ckpt_root=ckpt_dir,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
     if backbone in DINOFeatureExtractor.CKPT_FILENAMES:
-        return DINOFeatureExtractor(backbone, use_hyper=use_hyper, ckpt_root=ckpt_dir)
+        return DINOFeatureExtractor(
+            backbone,
+            use_hyper=use_hyper,
+            ckpt_root=ckpt_dir,
+            distributed_hypercolumn=distributed_hypercolumn,
+            hypercolumn_reduction_scale=hypercolumn_reduction_scale,
+        )
     raise ValueError(f"Unsupported backbone '{backbone}'.")
 
 
@@ -203,7 +271,12 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
     def input_names(self) -> List[str]:
         return self._input_names
 
-    def _apply_concat_preprocess(self, feature: torch.Tensor, target_size: tuple[int, int]) -> torch.Tensor:
+    def _apply_concat_preprocess(
+        self,
+        feature: torch.Tensor,
+        layer_name: str,
+        target_size: tuple[int, int],
+    ) -> torch.Tensor:
         target_h, target_w = target_size
         if feature.dim() == 3:
             if not self.patch_size:
@@ -224,7 +297,15 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
         else:
             raise ValueError("Unsupported feature shape for head export.")
 
-        feature = F.interpolate(feature, size=(target_h, target_w), mode="bilinear", align_corners=False)
+        reductions = getattr(self.generator.feature_extractor, "_distributed_reduction_layers", None)
+        use_distributed = getattr(self.generator.feature_extractor, "distributed_hypercolumn", False)
+        if use_distributed and reductions is not None and layer_name in reductions:
+            feature = reductions[layer_name](feature)
+
+        if feature.shape[-2:] != (target_h, target_w):
+            feature = F.interpolate(feature, size=(target_h, target_w), mode="bilinear", align_corners=False)
+        if not self.use_hyper:
+            feature = torch.zeros_like(feature)
         return feature
 
     def forward(self, *inputs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -234,11 +315,9 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
         *feature_maps, image = inputs
         target_size = (self.head_height, self.head_width)
         prepared_features: List[torch.Tensor] = []
-        for feature in feature_maps:
-            feature = self._apply_concat_preprocess(feature, target_size)
-            if not self.use_hyper:
-                feature = torch.zeros_like(feature)
-            prepared_features.append(feature)
+        for name, feature in zip(self.hyper_layers, feature_maps):
+            processed = self._apply_concat_preprocess(feature, name, target_size)
+            prepared_features.append(processed)
 
         image_prepared = F.interpolate(image, size=target_size, mode="bilinear", align_corners=False)
 
@@ -246,6 +325,11 @@ class GeneratorHeadExportWrapper(torch.nn.Module):
             hyper_input = torch.cat(prepared_features + [image_prepared], dim=1)
         else:
             hyper_input = image_prepared
+
+        use_distributed = getattr(self.generator.feature_extractor, "distributed_hypercolumn", False)
+        distributed_post = getattr(self.generator.feature_extractor, "_distributed_post", None)
+        if use_distributed and distributed_post is not None:
+            hyper_input = distributed_post(hyper_input)
 
         outputs = self.generator.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
@@ -275,22 +359,13 @@ class FullGeneratorExportWrapper(torch.nn.Module):
         return tensor
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.feature_extractor.extract_features(x, require_grad=True)
-        hyper_maps: List[torch.Tensor] = []
-        for name in self.feature_extractor.hyper_layers:
-            feat = features[name]
-            feat = self._resize_to_head(feat)
-            if self.feature_extractor.use_hyper:
-                hyper_maps.append(feat)
-            else:
-                hyper_maps.append(torch.zeros_like(feat))
-
+        target_size = (self.head_height, self.head_width)
+        hyper_input, _ = self.feature_extractor.build_hypercolumns_with_features(
+            x,
+            require_grad=True,
+            target_size=target_size,
+        )
         image_resized = self._resize_to_head(x)
-        if hyper_maps:
-            hyper_input = torch.cat(hyper_maps + [image_resized], dim=1)
-        else:
-            hyper_input = image_resized
-
         outputs = self.generator.forward_head(hyper_input)
         transmission, reflection = torch.chunk(outputs, 2, dim=1)
         skip_scale = getattr(self.generator, "output_skip_scale", None)
@@ -656,7 +731,19 @@ def export_onnx(args: argparse.Namespace) -> None:
     has_residual = variant == GENERATOR_VARIANT_RESIDUAL
     has_output_skip = state_dict_has_output_skip(state_dict)
 
-    feature_extractor = create_feature_extractor(backbone, use_hyper, ckpt_dir)
+    distributed_hypercolumn = any(
+        key.startswith("feature_extractor._distributed_reduction_layers")
+        or key.startswith("feature_extractor._distributed_post")
+        for key in state_dict.keys()
+    )
+    reduction_scale = infer_hypercolumn_reduction_scale(state_dict)
+    feature_extractor = create_feature_extractor(
+        backbone,
+        use_hyper,
+        ckpt_dir,
+        distributed_hypercolumn=distributed_hypercolumn,
+        hypercolumn_reduction_scale=reduction_scale,
+    )
     feature_extractor.eval()
     if has_residual:
         output_skip_init = 0.0 if has_output_skip else None
