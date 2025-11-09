@@ -115,7 +115,7 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vits16 \
---exp_name dinov3_vits16_residual \
+--exp_name dinov3_vits16_disthyper_residual \
 --use_distributed_hypercolumn \
 --residual_skips \
 --residual_init 0.1 \
