@@ -1089,12 +1089,12 @@ def train(args: argparse.Namespace) -> None:
                                f"loss: {mean_loss:.4f} "
                                f"percep: {mean_percep:.4f} "
                                f"grad: {mean_grad:.4f} "
-                               f"adv: {mean_adv:.4f} "
-                               f"elapsed: {elapsed:.2f}s")
+                               f"adv: {mean_adv:.4f} ")
                     if feature_distill_enabled:
                         log_msg += f" feat_dist: {mean_feat:.4f}"
                     if pixel_distill_enabled:
                         log_msg += f" pix_dist: {mean_pix:.4f}"
+                    log_msg += f" elapsed: {elapsed:.2f}s"
                     log(log_msg)
 
                 fake_t_vis = fake_t.detach().float()
