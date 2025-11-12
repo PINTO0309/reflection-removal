@@ -136,6 +136,8 @@ uv run python main.py \
 
 Therefore, the loss display is not the final total loss, but an indicator for checking the basic loss balance on the content side.
 
+If you want the teacher’s influence to fade during late epochs, pass `--enable_distill_decay`. This keeps the original distillation weights for a warmup period (default `--distill_decay_warmup_epochs 5`) and then applies a cosine schedule that smoothly decays both feature and pixel distillation weights to zero by the final epoch. The decay is disabled by default; omit the flag to keep static teacher weights. Distillation weights/decay settings are stored inside each checkpoint, so resuming training reproduces the same behavior even if you forget to re-specify the CLI flags.
+
 Distillation from `dinov3_vits16` to `dinov3_vitt` and fine-tuned backbone in DEIMv2 for students to learn.
 
 ```bash

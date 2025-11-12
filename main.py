@@ -254,12 +254,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--distill_teacher_checkpoint", default="", help="path to a teacher generator checkpoint (.pt or checkpoint directory)")
     parser.add_argument("--distill_feature_weight", type=float, default=0.05, help="weight for feature-map distillation loss (MSE)")
     parser.add_argument("--distill_pixel_weight", type=float, default=0.02, help="weight for teacher output distillation loss (L1)")
+    parser.add_argument("--enable_distill_decay", action="store_true", help="linearly warm up distillation for 5 epochs (default) then apply cosine decay to teacher weights")
+    parser.add_argument("--distill_decay_warmup_epochs", type=int, default=5, help="number of warmup epochs before distillation cosine decay kicks in")
     parser.add_argument("--residual_skips", action="store_true", help="enable residual skip connections after the hypercolumn stem")
     parser.add_argument("--residual_init", type=float, default=0.1, help="initial residual scale when --residual_skips is enabled")
     parser.add_argument("--output_skip_scale", type=float, default=None, help="initial transmission skip scale; requires --residual_skips")
     args = parser.parse_args()
     if args.hypercolumn_channel_reduction_scale < 1:
         parser.error("--hypercolumn_channel_reduction_scale must be >= 1")
+    if args.distill_decay_warmup_epochs < 0:
+        parser.error("--distill_decay_warmup_epochs must be >= 0")
     return args
 
 
@@ -558,7 +562,8 @@ def save_images(epoch_dir: Path, file_id: str, input_img: np.ndarray,
 
 def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
                     discriminator: PatchDiscriminator, optimizer_g, optimizer_d,
-                    backbone: str, feature_projector: Optional[nn.Module] = None) -> None:
+                    backbone: str, feature_projector: Optional[nn.Module] = None,
+                    train_config: Optional[Dict[str, Any]] = None) -> None:
     exp_dir.mkdir(parents=True, exist_ok=True)
     variant = generator_variant_from_module(generator)
     state = {
@@ -572,12 +577,25 @@ def save_checkpoint(exp_dir: Path, epoch: int, generator: HypercolumnGenerator,
     }
     if feature_projector is not None:
         state["feature_projector"] = feature_projector.state_dict()
+    if train_config is not None:
+        state["train_config"] = dict(train_config)
     torch.save(state, exp_dir / "checkpoint_latest.pt")
     torch.save({
         "state_dict": generator.state_dict(),
         "backbone": backbone,
         "generator_variant": variant,
     }, exp_dir / "generator.pt")
+
+
+def load_training_config_from_checkpoint(exp_dir: Path) -> Dict[str, Any]:
+    ckpt_path = exp_dir / "checkpoint_latest.pt"
+    if not ckpt_path.exists():
+        return {}
+    checkpoint = torch.load(ckpt_path, map_location="cpu")
+    config = checkpoint.get("train_config")
+    if isinstance(config, dict):
+        return config
+    return {}
 
 
 def evaluate_samples(
@@ -731,6 +749,34 @@ def train(args: argparse.Namespace) -> None:
     distill_feature_layers: List[str] = []
     feature_distill_weight = float(args.distill_feature_weight)
     pixel_distill_weight = float(args.distill_pixel_weight)
+    if args.resume:
+        ckpt_train_config = load_training_config_from_checkpoint(exp_dir)
+        restored_flags: List[str] = []
+        if ckpt_train_config:
+            if "distill_feature_weight" in ckpt_train_config:
+                feature_distill_weight = float(ckpt_train_config["distill_feature_weight"])
+                args.distill_feature_weight = feature_distill_weight
+                restored_flags.append("feature_distill_weight")
+            if "distill_pixel_weight" in ckpt_train_config:
+                pixel_distill_weight = float(ckpt_train_config["distill_pixel_weight"])
+                args.distill_pixel_weight = pixel_distill_weight
+                restored_flags.append("pixel_distill_weight")
+            if "enable_distill_decay" in ckpt_train_config:
+                args.enable_distill_decay = bool(ckpt_train_config["enable_distill_decay"])
+                restored_flags.append("enable_distill_decay")
+            if "distill_decay_warmup_epochs" in ckpt_train_config:
+                args.distill_decay_warmup_epochs = int(ckpt_train_config["distill_decay_warmup_epochs"])
+                restored_flags.append("distill_decay_warmup_epochs")
+            if restored_flags:
+                log(f"[i] Restored distillation settings from checkpoint: {', '.join(restored_flags)}")
+
+    def current_train_config() -> Dict[str, Any]:
+        return {
+            "distill_feature_weight": feature_distill_weight,
+            "distill_pixel_weight": pixel_distill_weight,
+            "enable_distill_decay": bool(args.enable_distill_decay),
+            "distill_decay_warmup_epochs": int(args.distill_decay_warmup_epochs),
+        }
 
     try:
         feature_extractor = create_feature_extractor(
@@ -837,6 +883,21 @@ def train(args: argparse.Namespace) -> None:
 
         feature_distill_enabled = feature_projector is not None and feature_distill_weight > 0.0
         pixel_distill_enabled = teacher_generator is not None and pixel_distill_weight > 0.0
+        distill_decay_enabled = bool(
+            args.enable_distill_decay and (feature_distill_enabled or pixel_distill_enabled)
+        )
+
+        def distill_scale_for_epoch(epoch_idx: int) -> float:
+            if not distill_decay_enabled:
+                return 1.0
+            warmup_epochs = max(args.distill_decay_warmup_epochs, 0)
+            if epoch_idx <= warmup_epochs:
+                return 1.0
+            total_decay_epochs = args.epochs - warmup_epochs
+            if total_decay_epochs <= 0:
+                return 1.0
+            progress = min(max((epoch_idx - warmup_epochs) / total_decay_epochs, 0.0), 1.0)
+            return 0.5 * (1.0 + math.cos(math.pi * progress))
 
         use_amp = bool(args.use_amp and device.type == "cuda")
         if args.use_amp and not use_amp:
@@ -913,6 +974,12 @@ def train(args: argparse.Namespace) -> None:
             epoch_feat_distill: List[float] = []
             epoch_pix_distill: List[float] = []
 
+            distill_scale = distill_scale_for_epoch(epoch)
+            epoch_feature_weight = feature_distill_weight * distill_scale if feature_distill_enabled else 0.0
+            epoch_pixel_weight = pixel_distill_weight * distill_scale if pixel_distill_enabled else 0.0
+            epoch_feature_distill_enabled = feature_distill_enabled and epoch_feature_weight > 0.0
+            epoch_pixel_distill_enabled = pixel_distill_enabled and epoch_pixel_weight > 0.0
+
             step = 0
             attempts = 0
             vis_snapshots: List[Dict[str, np.ndarray]] = []
@@ -966,13 +1033,13 @@ def train(args: argparse.Namespace) -> None:
                 teacher_fake_t: Optional[torch.Tensor] = None
                 teacher_fake_r: Optional[torch.Tensor] = None
                 teacher_feature_maps: Dict[str, torch.Tensor] = {}
-                if teacher_generator is not None and (feature_distill_enabled or pixel_distill_enabled):
+                if teacher_generator is not None and (epoch_feature_distill_enabled or epoch_pixel_distill_enabled):
                     with torch.no_grad():
                         with torch.amp.autocast("cuda", enabled=False):
                             teacher_outputs = teacher_generator(
-                                input_tensor, return_features=feature_distill_enabled
+                                input_tensor, return_features=epoch_feature_distill_enabled
                             )
-                    if feature_distill_enabled:
+                    if epoch_feature_distill_enabled:
                         teacher_fake_t, teacher_fake_r, teacher_feats = teacher_outputs
                         teacher_feature_maps = {
                             name: teacher_feats[name].detach()
@@ -983,7 +1050,7 @@ def train(args: argparse.Namespace) -> None:
                         teacher_fake_t, teacher_fake_r = teacher_outputs
                     teacher_fake_t = teacher_fake_t.detach()
                     teacher_fake_r = teacher_fake_r.detach()
-                if feature_distill_enabled:
+                if epoch_feature_distill_enabled:
                     fake_t, fake_r, student_features = (
                         generator(input_tensor, return_features=True)
                     )
@@ -1007,7 +1074,7 @@ def train(args: argparse.Namespace) -> None:
 
                     feature_distill_loss = fake_t.new_zeros(1)
                     pixel_distill_loss = fake_t.new_zeros(1)
-                    if feature_distill_enabled and teacher_feature_maps:
+                    if epoch_feature_distill_enabled and teacher_feature_maps:
                         projected_teacher = feature_projector(teacher_feature_maps)
                         feat_losses = []
                         for name in distill_feature_layers:
@@ -1019,7 +1086,7 @@ def train(args: argparse.Namespace) -> None:
                             feat_losses.append(F.mse_loss(student_map, teacher_map))
                         if feat_losses:
                             feature_distill_loss = torch.stack(feat_losses).mean()
-                    if pixel_distill_enabled and teacher_fake_t is not None:
+                    if epoch_pixel_distill_enabled and teacher_fake_t is not None:
                         pixel_losses = [F.l1_loss(fake_t, teacher_fake_t.to(fake_t.dtype))]
                         if teacher_fake_r is not None and teacher_fake_r.shape == fake_r.shape:
                             pixel_losses.append(F.l1_loss(fake_r, teacher_fake_r.to(fake_r.dtype)))
@@ -1028,8 +1095,8 @@ def train(args: argparse.Namespace) -> None:
 
                     content_loss = l1_r + 0.2 * perceptual_loss + grad_loss
                     distill_loss = (
-                        feature_distill_weight * feature_distill_loss
-                        + pixel_distill_weight * pixel_distill_loss
+                        epoch_feature_weight * feature_distill_loss
+                        + epoch_pixel_weight * pixel_distill_loss
                     )
                 with torch.amp.autocast("cuda", enabled=use_amp):
                     pred_fake_for_g = discriminator(input_tensor, fake_t)
@@ -1130,6 +1197,8 @@ def train(args: argparse.Namespace) -> None:
                 log_msg += f" | feat_dist {mean_feat:.4f}"
             if pixel_distill_enabled:
                 log_msg += f" | pix_dist {mean_pix:.4f}"
+            if distill_decay_enabled:
+                log_msg += f" | distill_scale {distill_scale:.3f}"
             log(log_msg)
 
             writer.add_scalar("train_epoch/content_loss", mean_loss, epoch)
@@ -1140,11 +1209,17 @@ def train(args: argparse.Namespace) -> None:
                 writer.add_scalar("train_epoch/feature_distill_loss", mean_feat, epoch)
             if pixel_distill_enabled:
                 writer.add_scalar("train_epoch/pixel_distill_loss", mean_pix, epoch)
+            if distill_decay_enabled:
+                writer.add_scalar("train_epoch/distill_scale", distill_scale, epoch)
+                if feature_distill_enabled:
+                    writer.add_scalar("train_epoch/feature_distill_weight", epoch_feature_weight, epoch)
+                if pixel_distill_enabled:
+                    writer.add_scalar("train_epoch/pixel_distill_weight", epoch_pixel_weight, epoch)
 
             if args.save_model_freq > 0 and epoch % args.save_model_freq == 0:
                 save_checkpoint(exp_dir, epoch, generator, discriminator,
                                 optimizer_g, optimizer_d, args.backbone,
-                                feature_projector)
+                                feature_projector, train_config=current_train_config())
                 epoch_dir = exp_dir / f"epoch_{epoch:04d}"
                 epoch_dir.mkdir(parents=True, exist_ok=True)
                 torch.save({
