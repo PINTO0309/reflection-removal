@@ -180,6 +180,7 @@ uv run python main.py \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
 --distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_disthyper4_residual.pt \
+--enable_distill_decay \
 --use_amp
 
 uv run python main.py \
@@ -194,6 +195,7 @@ uv run python main.py \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
 --distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_disthyper4_residual.pt \
+--enable_distill_decay \
 --use_amp
 
 uv run python main.py \
@@ -208,6 +210,7 @@ uv run python main.py \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
 --distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_disthyper4_residual.pt \
+--enable_distill_decay \
 --use_amp
 ```
 
