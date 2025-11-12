@@ -1089,7 +1089,7 @@ def train(args: argparse.Namespace) -> None:
                                f"loss: {mean_loss:.4f} "
                                f"percep: {mean_percep:.4f} "
                                f"grad: {mean_grad:.4f} "
-                               f"adv: {mean_adv:.4f} ")
+                               f"adv: {mean_adv:.4f}")
                     if feature_distill_enabled:
                         log_msg += f" feat_dist: {mean_feat:.4f}"
                     if pixel_distill_enabled:
