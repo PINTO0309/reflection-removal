@@ -94,6 +94,7 @@ uv run python main.py \
 --backbone dinov3_vits16 \
 --exp_name dinov3_vits16_disthyper_residual \
 --use_distributed_hypercolumn \
+--hypercolumn_channel_reduction_scale 4 \
 --residual_skips \
 --residual_init 0.1 \
 --use_amp
@@ -117,6 +118,7 @@ uv run python main.py \
 --backbone dinov3_vits16 \
 --exp_name dinov3_vits16_disthyper_residual \
 --use_distributed_hypercolumn \
+--hypercolumn_channel_reduction_scale 4 \
 --residual_skips \
 --residual_init 0.1 \
 --use_amp \
@@ -171,6 +173,7 @@ uv run python main.py \
 --exp_name dinov3_vitt_distill_residual \
 --ckpt_dir ckpts \
 --use_distributed_hypercolumn \
+--hypercolumn_channel_reduction_scale 4 \
 --residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
@@ -184,6 +187,7 @@ uv run python main.py \
 --exp_name dinov3_vits16_distill_disthyper_residual \
 --ckpt_dir ckpts \
 --use_distributed_hypercolumn \
+--hypercolumn_channel_reduction_scale 4 \
 --residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vitb16 \
