@@ -1,6 +1,11 @@
 # reflection-removal
 
-A model for removing reflections using a single image.
+A model for removing reflections using a single image. The goal is to significantly reduce the amount of calculation required for GAN and remove reflections in real time. The quality of the reflection removal is not important for this project.
+
+|Real|Removal|
+|:-:|:-:|
+|![100025](https://github.com/user-attachments/assets/125c2c8b-2a83-46d1-a3d7-a5d4473460a0)|<img width="957" height="773" alt="100025_transmission" src="https://github.com/user-attachments/assets/9a5e8ee2-ca31-4e75-b705-c96849718ccf" />|
+|![hyodo_001](https://github.com/user-attachments/assets/97b48bc3-1e7c-446c-ab54-a485a0c61ff3)|<img width="588" height="640" alt="hyodo_001_transmission" src="https://github.com/user-attachments/assets/82d2063f-2df5-407d-9a85-733b2b4c4bab" />|
 
 ## Setup
 
