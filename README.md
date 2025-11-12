@@ -1,6 +1,6 @@
 # reflection-removal
 
-A model for removing reflections using a single image. The goal is to significantly reduce the amount of calculation required for GAN and remove reflections in real time. The quality of the reflection removal is not important for this project.
+A model for removing reflections using a single image. The goal is to significantly reduce the amount of calculation required for GAN and remove reflections in real time. The quality of the reflection removal is not important for this project.  Built with DINOv3.
 
 |Real|Removal|
 |:-:|:-:|
