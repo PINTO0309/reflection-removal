@@ -372,3 +372,35 @@ If you use this repository in your research, please cite both the original metho
     booktitle = {IEEE Conference on Computer Vision and Pattern Recognition},
     year = {2018}
   }
+- https://github.com/Intellindust-AI-Lab/DEIMv2
+  ```bibtex
+  @article{huang2025deimv2,
+    title={Real-Time Object Detection Meets DINOv3},
+    author={Huang, Shihua and Hou, Yongjie and Liu, Longfei and Yu, Xuanlong and Shen, Xi},
+    journal={arXiv},
+    year={2025}
+  }
+  ```
+- https://github.com/facebookresearch/dinov3
+  ```bibtex
+  @misc{simeoni2025dinov3,
+    title={{DINOv3}},
+    author={Sim{\'e}oni, Oriane and Vo, Huy V. and Seitzer, Maximilian and Baldassarre, Federico and Oquab, Maxime and Jose, Cijo and Khalidov, Vasil and Szafraniec, Marc and Yi, Seungeun and Ramamonjisoa, Micha{\"e}l and Massa, Francisco and Haziza, Daniel and Wehrstedt, Luca and Wang, Jianyuan and Darcet, Timoth{\'e}e and Moutakanni, Th{\'e}o and Sentana, Leonel and Roberts, Claire and Vedaldi, Andrea and Tolan, Jamie and Brandt, John and Couprie, Camille and Mairal, Julien and J{\'e}gou, Herv{\'e} and Labatut, Patrick and Bojanowski, Piotr},
+    year={2025},
+    eprint={2508.10104},
+    archivePrefix={arXiv},
+    primaryClass={cs.CV},
+    url={https://arxiv.org/abs/2508.10104},
+  }
+  ```
+- https://github.com/PINTO0309/PINTO_model_zoo/tree/main/472_DEIMv2-Wholebody34
+  ```bibtex
+  @software{DEIMv2-Wholebody34,
+    author={Katsuya Hyodo},
+    title={Lightweight human detection models generated on high-quality human data sets. It can detect objects with high accuracy and speed in a total of 28 classes: body, adult, child, male, female, body_with_wheelchair, body_with_crutches, head, front, right-front, right-side, right-back, back, left-back, left-side, left-front, face, eye, nose, mouth, ear, collarbone, shoulder, solar_plexus, elbow, wrist, hand, hand_left, hand_right, abdomen, hip_joint, knee, ankle, foot.},
+    url={https://github.com/PINTO0309/PINTO_model_zoo/tree/main/472_DEIMv2-Wholebody34},
+    year={2025},
+    month={10},
+    doi={10.5281/zenodo.10229410}
+  }
+  ```
