@@ -7,6 +7,13 @@ A model for removing reflections using a single image. The goal is to significan
 |![100025](https://github.com/user-attachments/assets/125c2c8b-2a83-46d1-a3d7-a5d4473460a0)|<img width="957" height="773" alt="100025_transmission" src="https://github.com/user-attachments/assets/9a5e8ee2-ca31-4e75-b705-c96849718ccf" />|
 |![hyodo_001](https://github.com/user-attachments/assets/97b48bc3-1e7c-446c-ab54-a485a0c61ff3)|<img width="588" height="640" alt="hyodo_001_transmission" src="https://github.com/user-attachments/assets/82d2063f-2df5-407d-9a85-733b2b4c4bab" />|
 
+|Variant|Size|TensorRT inference latency|ONNX|
+|:-|:-:|:-:|:-:|
+|dinov3_vitt_distill_disthyper_residual_gennerator_640x640_320x320.onnx|24.2 MB|6.75 ms|Download|
+|dinov3_vitt_distill_disthyper_residual_gennerator_640x640_640x640.onnx|24.2 MB|18.82 ms|Download|
+|dinov3_vits16_disthyper_residual_gennerator_640x640_320x320.onnx|89.2 MB|9.49 ms|Download|
+|dinov3_vits16_disthyper_residual_gennerator_640x640_640x640.onnx|89.3 MB|24.97 ms|Download|
+
 ## Setup
 
 ```bash
