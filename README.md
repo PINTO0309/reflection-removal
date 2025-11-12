@@ -170,14 +170,14 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
---exp_name dinov3_vitt_distill_residual \
+--exp_name dinov3_vitt_distill_disthyper_residual \
 --ckpt_dir ckpts \
 --use_distributed_hypercolumn \
 --hypercolumn_channel_reduction_scale 4 \
 --residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
---distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_residual.pt \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_disthyper4_residual.pt \
 --use_amp
 
 uv run python main.py \
@@ -191,7 +191,7 @@ uv run python main.py \
 --residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vitb16 \
---distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vitb16.pt \
+--distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vitb16_disthyper4_residual.pt \
 --use_amp
 ```
 
