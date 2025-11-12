@@ -1191,14 +1191,14 @@ def train(args: argparse.Namespace) -> None:
                        f"| content {mean_loss:.4f} "
                        f"| perceptual {mean_percep:.4f} "
                        f"| grad {mean_grad:.4f} "
-                       f"| adv {mean_adv:.4f} "
-                       f"| elapsed {epoch_elapsed:.2f}s")
+                       f"| adv {mean_adv:.4f}")
             if feature_distill_enabled:
                 log_msg += f" | feat_dist {mean_feat:.4f}"
             if pixel_distill_enabled:
                 log_msg += f" | pix_dist {mean_pix:.4f}"
             if distill_decay_enabled:
                 log_msg += f" | distill_scale {distill_scale:.3f}"
+            log_msg += f"| elapsed {epoch_elapsed:.2f}s"
             log(log_msg)
 
             writer.add_scalar("train_epoch/content_loss", mean_loss, epoch)
