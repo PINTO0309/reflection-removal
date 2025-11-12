@@ -916,6 +916,7 @@ def train(args: argparse.Namespace) -> None:
             step = 0
             attempts = 0
             vis_snapshots: List[Dict[str, np.ndarray]] = []
+            last_log_time = time.perf_counter()
 
             while step < steps_per_epoch:
                 attempts += 1
@@ -1075,6 +1076,9 @@ def train(args: argparse.Namespace) -> None:
                 global_step += 1
 
                 if step % max(args.log_interval, 1) == 0:
+                    now = time.perf_counter()
+                    elapsed = now - last_log_time
+                    last_log_time = now
                     mean_loss = float(np.mean(epoch_losses)) if epoch_losses else 0.0
                     mean_percep = float(np.mean(epoch_percep)) if epoch_percep else 0.0
                     mean_grad = float(np.mean(epoch_grad)) if epoch_grad else 0.0
@@ -1085,7 +1089,8 @@ def train(args: argparse.Namespace) -> None:
                                f"loss: {mean_loss:.4f} "
                                f"percep: {mean_percep:.4f} "
                                f"grad: {mean_grad:.4f} "
-                               f"adv: {mean_adv:.4f}")
+                               f"adv: {mean_adv:.4f} "
+                               f"elapsed: {elapsed:.2f}s")
                     if feature_distill_enabled:
                         log_msg += f" feat_dist: {mean_feat:.4f}"
                     if pixel_distill_enabled:
