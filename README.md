@@ -91,6 +91,11 @@ uv run python main.py \
 --residual_init 0.1 \
 --use_amp
 ```
+
+Residual generator variants:
+- `--residual_skips` enables single-stage residual scaling after each dilated block.
+- `--residual_in_residual_skips` stacks the eight dilated blocks into two Residual-in-Residual groups (4 layers each) for deeper skip modulation. This flag supersedes `--residual_skips` when both are provided.
+
 ```bash
 # Initialized with pretrained weights + Residual blocks
 uv run python main.py \

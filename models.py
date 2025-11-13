@@ -285,6 +285,77 @@ class ResidualHypercolumnGenerator(HypercolumnGenerator):
         return transmission, reflection
 
 
+class ResidualInResidualHypercolumnGenerator(HypercolumnGenerator):
+    """Residual-in-Residual variant with grouped residual blocks."""
+
+    _GROUP_DEFINITION = (
+        ("conv1", "conv2", "conv3", "conv4"),
+        ("conv5", "conv6", "conv7", "conv9"),
+    )
+
+    def __init__(
+        self,
+        feature_extractor: FeatureExtractorBase,
+        base_channels: int = 64,
+        residual_init: float = 0.1,
+        output_skip_init: Optional[float] = None,
+    ):
+        super().__init__(feature_extractor, base_channels=base_channels)
+        inner_scale_value = torch.tensor(residual_init, dtype=self.conv0.conv.weight.dtype)
+        group_scale_value = torch.tensor(residual_init, dtype=self.conv0.conv.weight.dtype)
+        self.rir_inner_scales = nn.ParameterList([
+            nn.Parameter(inner_scale_value.clone())
+            for _ in range(sum(len(group) for group in self._GROUP_DEFINITION))
+        ])
+        self.rir_group_scales = nn.ParameterList([
+            nn.Parameter(group_scale_value.clone())
+            for _ in range(len(self._GROUP_DEFINITION))
+        ])
+        if output_skip_init is not None:
+            self.output_skip_scale = nn.Parameter(
+                torch.tensor(output_skip_init, dtype=self.conv0.conv.weight.dtype)
+            )
+        else:
+            self.register_parameter("output_skip_scale", None)
+
+    def _group_modules(self) -> Tuple[Tuple[nn.Module, ...], ...]:
+        blocks: Tuple[Tuple[nn.Module, ...], ...] = tuple(
+            tuple(getattr(self, name) for name in group)
+            for group in self._GROUP_DEFINITION
+        )
+        return blocks
+
+    def forward_head(self, hyper_input: torch.Tensor) -> torch.Tensor:
+        net = self.conv0(hyper_input)
+        inner_scale_iter = iter(self.rir_inner_scales)
+        for group_idx, block in enumerate(self._group_modules()):
+            outer_residual = net
+            for conv in block:
+                residual = net
+                update = conv(residual)
+                scale = next(inner_scale_iter)
+                net = residual + scale * update
+            group_scale = self.rir_group_scales[group_idx]
+            net = outer_residual + group_scale * (net - outer_residual)
+        return self.conv_last(net)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        return_features: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, Dict[str, torch.Tensor]]:
+        hyper_input, features = self.feature_extractor.build_hypercolumns_with_features(x, require_grad=True)
+        outputs = self.forward_head(hyper_input)
+        transmission_delta, reflection = torch.chunk(outputs, 2, dim=1)
+        if self.output_skip_scale is not None:
+            transmission = x + self.output_skip_scale * transmission_delta
+        else:
+            transmission = transmission_delta
+        if return_features:
+            return transmission, reflection, features
+        return transmission, reflection
+
+
 class FeatureProjector(nn.Module):
     """Projects teacher feature maps to match student dimensionality."""
 

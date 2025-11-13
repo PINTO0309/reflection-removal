@@ -22,6 +22,7 @@ from models import (
     HGNetFeatureExtractor,
     HypercolumnGenerator,
     ResidualHypercolumnGenerator,
+    ResidualInResidualHypercolumnGenerator,
     VGGFeatureExtractor,
 )
 
@@ -72,10 +73,13 @@ def _normalise_backbone(name: str) -> str:
 
 GENERATOR_VARIANT_BASELINE = "baseline"
 GENERATOR_VARIANT_RESIDUAL = "residual_skips"
+GENERATOR_VARIANT_RIR = "residual_in_residual_skips"
 
 
 def infer_generator_variant(state_dict: Dict[str, Any]) -> str:
     for key in state_dict.keys():
+        if key.startswith("rir_inner_scales") or key.startswith("rir_group_scales"):
+            return GENERATOR_VARIANT_RIR
         if key.startswith("residual_scales"):
             return GENERATOR_VARIANT_RESIDUAL
     return GENERATOR_VARIANT_BASELINE
@@ -728,7 +732,6 @@ def export_onnx(args: argparse.Namespace) -> None:
     static_shape: bool = args.static_shape
 
     state_dict, variant = extract_generator_state(state, backbone)
-    has_residual = variant == GENERATOR_VARIANT_RESIDUAL
     has_output_skip = state_dict_has_output_skip(state_dict)
 
     distributed_hypercolumn = any(
@@ -745,7 +748,14 @@ def export_onnx(args: argparse.Namespace) -> None:
         hypercolumn_reduction_scale=reduction_scale,
     )
     feature_extractor.eval()
-    if has_residual:
+    if variant == GENERATOR_VARIANT_RIR:
+        output_skip_init = 0.0 if has_output_skip else None
+        generator = ResidualInResidualHypercolumnGenerator(
+            feature_extractor,
+            residual_init=0.0,
+            output_skip_init=output_skip_init,
+        ).to(device)
+    elif variant == GENERATOR_VARIANT_RESIDUAL:
         output_skip_init = 0.0 if has_output_skip else None
         generator = ResidualHypercolumnGenerator(
             feature_extractor,
