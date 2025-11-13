@@ -32,6 +32,9 @@ source .venv/bin/activate
   * **DINOv3 standard variants** (`dinov3_vits16`, `dinov3_vits16plus`, `dinov3_vitb16`) — place the provided checkpoints inside `./ckpts/` (files named `dinov3_*_pretrain_lvd1689m-*.pth`). If the files are missing, they will be downloaded automatically through `torch.hub`.
 
 ## Dataset
+
+There is a significant lack of real-world reflection data, but it should be enough to ensure that learning is proceeding normally. Synthetic data is useless, so we should diligently collect authentic data from the real world.
+
 https://github.com/ceciliavision/perceptual-reflection-removal?tab=readme-ov-file#dataset
 
 ```
