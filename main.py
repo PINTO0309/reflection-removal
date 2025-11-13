@@ -21,8 +21,9 @@ from losses import (compute_exclusion_loss, compute_l1_loss,
                     compute_perceptual_loss)
 from models import (DINOFeatureExtractor, FeatureExtractorBase,
                     FeatureProjector, HypercolumnGenerator,
-                    ResidualHypercolumnGenerator, VGGFeatureExtractor,
-                    HGNetFeatureExtractor)
+                    ResidualHypercolumnGenerator,
+                    ResidualInResidualHypercolumnGenerator,
+                    VGGFeatureExtractor, HGNetFeatureExtractor)
 
 
 IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.ppm', '.bmp'}
@@ -35,13 +36,25 @@ RUNS_ROOT = PROJECT_ROOT / "runs"
 
 GENERATOR_VARIANT_BASELINE = "baseline"
 GENERATOR_VARIANT_RESIDUAL = "residual_skips"
+GENERATOR_VARIANT_RIR = "residual_in_residual_skips"
+RESIDUAL_VARIANTS = {
+    GENERATOR_VARIANT_RESIDUAL,
+    GENERATOR_VARIANT_RIR,
+}
 
 
-def generator_variant_name(use_residual: bool) -> str:
-    return GENERATOR_VARIANT_RESIDUAL if use_residual else GENERATOR_VARIANT_BASELINE
+def generator_variant_name(
+    residual_skips: bool,
+    residual_in_residual_skips: bool = False,
+) -> str:
+    if residual_in_residual_skips:
+        return GENERATOR_VARIANT_RIR
+    return GENERATOR_VARIANT_RESIDUAL if residual_skips else GENERATOR_VARIANT_BASELINE
 
 
 def generator_variant_from_module(generator: HypercolumnGenerator) -> str:
+    if isinstance(generator, ResidualInResidualHypercolumnGenerator):
+        return GENERATOR_VARIANT_RIR
     if isinstance(generator, ResidualHypercolumnGenerator):
         return GENERATOR_VARIANT_RESIDUAL
     return GENERATOR_VARIANT_BASELINE
@@ -49,6 +62,8 @@ def generator_variant_from_module(generator: HypercolumnGenerator) -> str:
 
 def infer_variant_from_state_dict(state_dict: Dict[str, torch.Tensor]) -> str:
     for key in state_dict.keys():
+        if key.startswith("rir_inner_scales") or key.startswith("rir_group_scales"):
+            return GENERATOR_VARIANT_RIR
         if key.startswith("residual_scales") or key.startswith("output_skip_scale"):
             return GENERATOR_VARIANT_RESIDUAL
     return GENERATOR_VARIANT_BASELINE
@@ -65,19 +80,32 @@ def resolve_checkpoint_variant(
 
 def build_generator(
     feature_extractor: FeatureExtractorBase,
-    residual_skips: bool,
+    generator_variant: str,
     residual_init: float,
     output_skip_scale: Optional[float],
 ) -> HypercolumnGenerator:
-    if residual_skips:
+    if generator_variant not in (
+        GENERATOR_VARIANT_BASELINE,
+        GENERATOR_VARIANT_RESIDUAL,
+        GENERATOR_VARIANT_RIR,
+    ):
+        raise ValueError(f"Unsupported generator variant: {generator_variant}")
+    residual_variant_requested = generator_variant in RESIDUAL_VARIANTS
+    if generator_variant == GENERATOR_VARIANT_RIR:
+        return ResidualInResidualHypercolumnGenerator(
+            feature_extractor,
+            residual_init=residual_init,
+            output_skip_init=output_skip_scale,
+        )
+    if generator_variant == GENERATOR_VARIANT_RESIDUAL:
         return ResidualHypercolumnGenerator(
             feature_extractor,
             residual_init=residual_init,
             output_skip_init=output_skip_scale,
         )
-    if output_skip_scale is not None:
+    if output_skip_scale is not None and not residual_variant_requested:
         warnings.warn(
-            "--output_skip_scale is only used when --residual_skips is enabled; ignoring the value.",
+            "--output_skip_scale only applies to residual generator variants; ignoring the value.",
             RuntimeWarning,
         )
     return HypercolumnGenerator(feature_extractor)
@@ -257,13 +285,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--enable_distill_decay", action="store_true", help="linearly warm up distillation for 5 epochs (default) then apply cosine decay to teacher weights")
     parser.add_argument("--distill_decay_warmup_epochs", type=int, default=5, help="number of warmup epochs before distillation cosine decay kicks in")
     parser.add_argument("--residual_skips", action="store_true", help="enable residual skip connections after the hypercolumn stem")
+    parser.add_argument(
+        "--residual_in_residual_skips",
+        action="store_true",
+        help="enable Residual-in-Residual skip connections (takes precedence over --residual_skips)",
+    )
     parser.add_argument("--residual_init", type=float, default=0.1, help="initial residual scale when --residual_skips is enabled")
-    parser.add_argument("--output_skip_scale", type=float, default=None, help="initial transmission skip scale; requires --residual_skips")
+    parser.add_argument(
+        "--output_skip_scale",
+        type=float,
+        default=None,
+        help="initial transmission skip scale; requires a residual generator variant",
+    )
     args = parser.parse_args()
     if args.hypercolumn_channel_reduction_scale < 1:
         parser.error("--hypercolumn_channel_reduction_scale must be >= 1")
     if args.distill_decay_warmup_epochs < 0:
         parser.error("--distill_decay_warmup_epochs must be >= 0")
+    if args.residual_in_residual_skips and args.residual_skips:
+        warnings.warn(
+            "--residual_skips is ignored because --residual_in_residual_skips is enabled.",
+            RuntimeWarning,
+        )
+    if args.residual_in_residual_skips:
+        args.residual_skips = False
     return args
 
 
@@ -734,6 +779,10 @@ def train(args: argparse.Namespace) -> None:
     ckpt_root = resolve_path(args.ckpt_dir)
     exp_dir = get_experiment_dir(args.exp_name)
     exp_dir.mkdir(parents=True, exist_ok=True)
+    requested_variant = generator_variant_name(
+        residual_skips=bool(args.residual_skips),
+        residual_in_residual_skips=bool(args.residual_in_residual_skips),
+    )
 
     log_path = exp_dir / "train.log"
     log_file = open(log_path, "a", encoding="utf-8")
@@ -788,7 +837,7 @@ def train(args: argparse.Namespace) -> None:
         )
         generator = build_generator(
             feature_extractor,
-            residual_skips=args.residual_skips,
+            generator_variant=requested_variant,
             residual_init=args.residual_init,
             output_skip_scale=args.output_skip_scale,
         ).to(device)
@@ -844,13 +893,12 @@ def train(args: argparse.Namespace) -> None:
                 distributed_hypercolumn=teacher_distributed,
                 hypercolumn_reduction_scale=teacher_scale,
             )
-            teacher_residual = teacher_variant == GENERATOR_VARIANT_RESIDUAL
             teacher_has_output_skip = state_dict_has_output_skip(teacher_state_dict)
             teacher_generator = build_generator(
                 teacher_feature_extractor,
-                residual_skips=teacher_residual,
+                generator_variant=teacher_variant,
                 residual_init=0.0,
-                output_skip_scale=0.0 if teacher_residual and teacher_has_output_skip else None,
+                output_skip_scale=0.0 if teacher_has_output_skip else None,
             ).to(device)
             teacher_generator.load_state_dict(teacher_state_dict)
             teacher_generator.eval()
@@ -1264,9 +1312,13 @@ def inference(args: argparse.Namespace) -> None:
         distributed_hypercolumn=args.use_distributed_hypercolumn,
         hypercolumn_reduction_scale=args.hypercolumn_channel_reduction_scale,
     )
+    requested_variant = generator_variant_name(
+        residual_skips=bool(args.residual_skips),
+        residual_in_residual_skips=bool(args.residual_in_residual_skips),
+    )
     generator = build_generator(
         feature_extractor,
-        residual_skips=args.residual_skips,
+        generator_variant=requested_variant,
         residual_init=args.residual_init,
         output_skip_scale=args.output_skip_scale,
     ).to(device)
