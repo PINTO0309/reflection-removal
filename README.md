@@ -333,6 +333,8 @@ Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
   ```
   <img width="800" alt="image" src="https://github.com/user-attachments/assets/5338c4fd-8086-4f5d-be68-3d90c1096c91" />
 
+  <img width="800" alt="image" src="https://github.com/user-attachments/assets/972af9fe-af3e-48d6-91ef-f8811ef98bbc" />
+
 - Head only
   ```bash
   uv run python export_onnx.py \
