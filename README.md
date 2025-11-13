@@ -1,4 +1,6 @@
 # reflection-removal
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17595044.svg)](https://doi.org/10.5281/zenodo.17595044) ![GitHub License](https://img.shields.io/github/license/pinto0309/reflection-removal) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/PINTO0309/reflection-removal)
+
 # WIP, November 13, 2025
 A model for removing reflections using a single image. The goal is to significantly reduce the amount of calculation required for GAN and remove reflections in real time. The quality of the reflection removal is not important for this project.  Built with DINOv3.
 
@@ -11,8 +13,8 @@ A model for removing reflections using a single image. The goal is to significan
 |:-|:-:|:-:|:-:|
 |dinov3_vitt_distill_disthyper_residual_gennerator_640x640_320x320|24.2 MB|6.75 ms|Download|
 |dinov3_vitt_distill_disthyper_residual_gennerator_640x640_640x640|24.2 MB|18.82 ms|Download|
-|dinov3_vits16_disthyper_residual_gennerator_640x640_320x320|89.2 MB|9.49 ms|Download|
-|dinov3_vits16_disthyper_residual_gennerator_640x640_640x640|89.3 MB|24.97 ms|Download|
+|dinov3_vits16_disthyper_residual_gennerator_640x640_320x320|89.2 MB|9.49 ms|[Download](https://github.com/PINTO0309/reflection-removal/releases/download/onnx/dinov3_vits16_disthyper_residual_gennerator_640x640_320x320.onnx)|
+|dinov3_vits16_disthyper_residual_gennerator_640x640_640x640|89.3 MB|24.97 ms|[Download](https://github.com/PINTO0309/reflection-removal/releases/download/onnx/dinov3_vits16_disthyper_residual_gennerator_640x640_640x640.onnx)|
 
 ## Setup
 
@@ -363,7 +365,7 @@ If you use this repository in your research, please cite both the original metho
   month     = {nov},
   publisher = {Zenodo},
   version   = {1.0.0},
-  doi       = {10.5281/zenodo.17413165},
+  doi       = {10.5281/zenodo.17595044},
   url       = {https://github.com/PINTO0309/reflection-removal},
   abstract  = {A model for removing reflections using a single image.},
 }
