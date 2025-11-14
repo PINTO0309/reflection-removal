@@ -334,7 +334,7 @@ If you prefer ONNX Runtime instead, supply `--onnx-model <path>` and select the 
 
 ```bash
 uv run python compute_pnsr_ssim_metrics.py \
---subset real \
+--subset all \
 --max-samples 500 \
 --onnx-model dinov3_vitt_gennerator_640x640_640x640.onnx \
 --providers cuda --providers cpu \
