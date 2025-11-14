@@ -11,3 +11,4 @@ DEIMv2/
 *.engine
 *.profile
 *.log
+metrics.csv

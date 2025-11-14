@@ -303,6 +303,61 @@ If `--test_only` is omitted, the script trains by default and writes checkpoints
 
 Test outputs are written to `./test_results/<exp_name>/<image_name>/`.
 
+## Dataset PSNR/SSIM Benchmark
+
+Use `compute_pnsr_ssim_metrics.py` to compute transmission-layer PSNR and SSIM for the samples stored under `reflection-dataset/`. By default it compares the paired ground-truth images directly:
+
+```bash
+uv run python compute_pnsr_ssim_metrics.py --subset real
+```
+
+Key options:
+
+- `--subset {real,synthetic,all}` – choose the dataset split.
+- `--max-samples N` – limit the number of pairs per split (handy for quick spot checks).
+- `--output-csv metrics.csv` – dump per-image metrics for further analysis.
+- `--skip-missing/--no-skip-missing` – control what happens when a pair is absent (`--skip-missing` is enabled by default).
+- `--synthetic-seed` – seed controlling the on-the-fly blend generation used for the synthetic split (requires a model flag).
+
+To benchmark predicted transmissions from a PyTorch checkpoint (either a `.pt` file or a `runs/<exp>/epoch_xxxx/` directory), point the script at the artifact:
+
+```bash
+uv run python compute_pnsr_ssim_metrics.py \
+--subset real \
+--max-samples 100 \
+--checkpoint runs/dinov3_vitt_distill_disthyper_residual/epoch_0033/checkpoint.pt \
+--device cuda:0 \
+--output-csv metrics.csv
+```
+
+If you prefer ONNX Runtime instead, supply `--onnx-model <path>` and select the execution providers in priority order via repeated `--providers` flags (`cpu`, `cuda`, `tensorrt`):
+
+```bash
+uv run python compute_pnsr_ssim_metrics.py \
+--subset real \
+--max-samples 500 \
+--onnx-model dinov3_vitt_gennerator_640x640_640x640.onnx \
+--providers cuda --providers cpu \
+--output-csv metrics.csv
+```
+
+When a model is provided, the script feeds each blended (or synthetic reflection) image through the generator, resizes the transmission prediction back to the ground-truth resolution, and reports split-level summary statistics plus optional CSV output.
+For the synthetic split, the script now mirrors training by generating blended inputs on the fly from every reflection/transmission pair, so you must specify either `--checkpoint` or `--onnx-model` whenever you evaluate `--subset synthetic` (or `--subset all`, which includes it implicitly).
+
+- Example output
+  ```
+  [INFO] Loading ONNX model from dinov3_vitt_gennerator_640x640_640x640.onnx
+  real: blended vs transmission_layer: 100%|█████████| 500/500 [01:54<00:00,  4.37it/s]
+  [RESULT] split=real (blended vs transmission_layer) samples=500
+          PSNR  -> mean=25.0195, min=9.6244, max=36.3645
+          SSIM  -> mean=0.8617, min=0.1860, max=0.9840
+  synthetic: blended vs transmission_layer: 100%|█████████| 500/500 [01:15<00:00,  6.61it/s]
+  [RESULT] split=synthetic (synthetic_blended vs transmission_layer) samples=500
+          PSNR  -> mean=24.5095, min=9.9238, max=36.4029
+          SSIM  -> mean=0.9001, min=0.1582, max=0.9919
+  [INFO] Wrote per-image metrics to metrics.csv
+  ```
+
 ## VITT (DEIMv2-S) backbone outputs -> generator inputs
 
 1. `/generator/blocks.0/Add_1_output_0: float32[1,1601,192]` -> `float32[1,192,640,640]`
