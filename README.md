@@ -347,11 +347,11 @@ For the synthetic split, the script now mirrors training by generating blended i
 - Example output
   ```
   [INFO] Loading ONNX model from dinov3_vitt_gennerator_640x640_640x640.onnx
-  real: blended vs transmission_layer: 100%|█████████| 500/500 [01:54<00:00,  4.37it/s]
+  real: blended vs transmission_layer: 100%|███████| 500/500 [01:54<00:00,  4.37it/s]
   [RESULT] split=real (blended vs transmission_layer) samples=500
           PSNR  -> mean=25.0195, min=9.6244, max=36.3645
           SSIM  -> mean=0.8617, min=0.1860, max=0.9840
-  synthetic: blended vs transmission_layer: 100%|█████████| 500/500 [01:15<00:00,  6.61it/s]
+  synthetic: blended vs transmission_layer: 100%|███████| 500/500 [01:15<00:00,  6.61it/s]
   [RESULT] split=synthetic (synthetic_blended vs transmission_layer) samples=500
           PSNR  -> mean=24.5095, min=9.9238, max=36.4029
           SSIM  -> mean=0.9001, min=0.1582, max=0.9919
