@@ -390,6 +390,33 @@ For the synthetic split, the script now mirrors training by generating blended i
   --width 640 \
   --head_height 320 \
   --head_width 320
+
+
+  H=640
+  W=640
+  # dinov3_vits16
+  # dinov3_vitt
+  VAR=dinov3_vitt
+  # _distill
+  DIST=_distill
+  EPOCH=0013
+  
+  pushd ../..
+  uv run python export_onnx.py \
+  --checkpoint runs/${VAR}${DIST}_disthyper_rir/epoch_${EPOCH}/checkpoint.pt \
+  --output ${VAR}${DIST}_disthyper_rir_gennerator_640x640_${H}x${W}.onnx \
+  --backbone ${VAR} \
+  --static_shape \
+  --height 640 \
+  --width 640 \
+  --head_height ${H} \
+  --head_width ${W}
+  uv run python demo_reflection_removal.py \
+  --input test_images \
+  --output runs/test \
+  --model ${VAR}${DIST}_disthyper_rir_gennerator_640x640_${H}x${W}.onnx \
+  --provider CUDAExecutionProvider
+  popd
   ```
   <img width="800" alt="image" src="https://github.com/user-attachments/assets/5338c4fd-8086-4f5d-be68-3d90c1096c91" />
 
