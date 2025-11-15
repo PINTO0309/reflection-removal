@@ -182,7 +182,7 @@ uv run python main.py \
 --backbone dinov3_vitt \
 --exp_name dinov3_vitt_distill_residual \
 --ckpt_dir ckpts \
---residual_skips \
+--residual_in_residual_skips \
 --residual_init 0.1 \
 --distill_teacher_backbone dinov3_vits16 \
 --distill_teacher_checkpoint ckpts/reflection_removal_dinov3_vits16_residual.pt \
