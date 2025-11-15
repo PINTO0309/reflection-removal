@@ -180,7 +180,7 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
---exp_name dinov3_vitt_distill_residual \
+--exp_name dinov3_vitt_distill_disthyper_rir \
 --ckpt_dir ckpts \
 --residual_in_residual_skips \
 --residual_init 0.1 \
@@ -194,7 +194,7 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
---exp_name dinov3_vitt_distill_disthyper_residual \
+--exp_name dinov3_vitt_distill_disthyper_rir \
 --ckpt_dir ckpts \
 --use_distributed_hypercolumn \
 --hypercolumn_channel_reduction_scale 4 \
@@ -209,7 +209,7 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
---exp_name dinov3_vitt_distill_disthyper_residual \
+--exp_name dinov3_vitt_distill_disthyper_rir \
 --ckpt_dir ckpts \
 --use_distributed_hypercolumn \
 --hypercolumn_channel_reduction_scale 8 \
@@ -224,7 +224,7 @@ uv run python main.py \
 --data_syn_dir reflection-dataset/synthetic \
 --data_real_dir reflection-dataset/real \
 --backbone dinov3_vitt \
---exp_name dinov3_vitt_distill_disthyper_residual \
+--exp_name dinov3_vitt_distill_disthyper_rir \
 --ckpt_dir ckpts \
 --use_distributed_hypercolumn \
 --hypercolumn_channel_reduction_scale 16 \
