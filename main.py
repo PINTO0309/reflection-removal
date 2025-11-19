@@ -728,8 +728,22 @@ def resume_from_checkpoint(
         )
     generator.load_state_dict(generator_state)
     discriminator.load_state_dict(checkpoint["discriminator"])
-    optimizer_g.load_state_dict(checkpoint["optimizer_g"])
-    optimizer_d.load_state_dict(checkpoint["optimizer_d"])
+    try:
+        optimizer_g.load_state_dict(checkpoint["optimizer_g"])
+    except (KeyError, ValueError, RuntimeError) as exc:
+        warnings.warn(
+            f"Failed to restore generator optimizer state from checkpoint; continuing with a freshly "
+            f"initialized optimizer. ({exc})",
+            RuntimeWarning,
+        )
+    try:
+        optimizer_d.load_state_dict(checkpoint["optimizer_d"])
+    except (KeyError, ValueError, RuntimeError) as exc:
+        warnings.warn(
+            f"Failed to restore discriminator optimizer state from checkpoint; continuing with a freshly "
+            f"initialized optimizer. ({exc})",
+            RuntimeWarning,
+        )
     if feature_projector is not None and "feature_projector" in checkpoint:
         feature_projector.load_state_dict(checkpoint["feature_projector"])
     return int(checkpoint.get("epoch", 0)) + 1
